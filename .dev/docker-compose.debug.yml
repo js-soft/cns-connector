@@ -18,6 +18,30 @@ services:
       - mongo-express
     stdin_open: true
     tty: true
+  
+  keycloaky:
+    container_name: keycloaky
+    image: quay.io/keycloak/keycloak:latest
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: Pa55w0rd
+    ports:
+      - 8081:8080
+    volumes:
+      - ./keycloak.conf:/opt/keycloak/conf/keycloak.conf:ro
+    command: start-dev
+    depends_on:
+      - postgresy
+  
+  postgresy:
+    container_name: postgresy
+    image: postgres
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: keycloak
+      POSTGRES_USER: keycloak
+      POSTGRES_PASSWORD: password
 
   bc-2:
     build:
@@ -70,3 +94,4 @@ services:
 
 volumes:
   mongo_data:
+  postgres_data:
