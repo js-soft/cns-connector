@@ -1,8 +1,20 @@
 {
     "transportLibrary": {
-        "baseUrl": "http://dev.enmeshed.eu"
+        "baseUrl": "https://bird.enmeshed.eu"
     },
     "modules": {
-        "amqpPublisher": { "url": "amqp://rabbitmq", "exchange": "nmshd" }
+        "amqpPublisher": { "url": "amqp://rabbitmq", "exchange": "nmshd" },
+        "idpOnboarding": {
+            "enabled": true,
+            "baseUrl": "http://keycloaky:8080",
+            "realm": "demo",
+            "client": "demo-client",
+            "admin": {
+                "username": "admin",
+                "password": "Pa55w0rd"
+            },
+            "passwordStrategy": "randomPassword",
+            "userIdStrategy": "custom"
+        }
     }
 }
