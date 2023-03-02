@@ -12,9 +12,13 @@ export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfigurat
 
 export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleConfig> {
     private idp: IdentityProvider;
+    private passwordStore?: Map<string, { userId?: string; pw: string }>;
 
     public async init(): Promise<void> {
         this.idp = new KeycloakIdentityProvider(this.configuration);
+        if (this.configuration.passwordStrategy === "ownPassword") {
+            this.passwordStore = new Map();
+        }
 
         try {
             await this.idp.initialize();
@@ -95,14 +99,14 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                         break;
                     }
                     case "ownPassword": {
-                        password = metadata.password;
+                        password = this.passwordStore!.get(templateId)!.pw;
                         break;
                     }
                 }
                 const registrationResult = await this.idp.register(change, userId, password);
                 switch (registrationResult) {
                     case Result.Success: {
-                        await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: undefined });
+                        await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         this.runtime.eventBus.publish(
                             new RegistrationCompletedEvent({
                                 userId,
@@ -110,15 +114,16 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                 password: metadata.password
                             })
                         );
+                        break;
                     }
                     case Result.Error: {
-                        const result = await this.runtime.transportServices.relationships.rejectRelationshipChange({
+                        await this.runtime.transportServices.relationships.rejectRelationshipChange({
                             relationshipId: relationship.id,
                             changeId,
                             content: {}
                         });
-                        this.logger.info(result);
                         // TODO: Extend RegistrationCompletedEvent so that it can send error messages
+                        break;
                     }
                 }
                 break;
@@ -126,17 +131,19 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 const onboardingResult = await this.idp.onboard(change, userId);
                 switch (onboardingResult) {
                     case Result.Success: {
-                        await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: undefined });
+                        await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         this.runtime.eventBus.publish(
                             new OnboardingCompletedEvent({
                                 userId,
                                 sessionId: metadata.webSessionId
                             })
                         );
+                        break;
                     }
                     case Result.Error: {
-                        await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: undefined });
+                        await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         // TODO: Extend OnboardingCompletedEvent so that it can send error messages
+                        break;
                     }
                 }
                 break;
@@ -152,7 +159,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         const user = await this.idp.getUser(query.userId as string);
 
         if (query.userId && user) {
-            const qrBytes: ArrayBuffer = await this.createQRCode(RegistrationType.Newcommer, query.userId as string, query.sId as string | undefined);
+            const qrBytes: ArrayBuffer = (await this.createQRCode(RegistrationType.Newcommer, query.userId as string, query.sId as string | undefined))[0];
 
             return res.send(arrayBufferToStringArray(qrBytes)).status(200);
         }
@@ -185,12 +192,16 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             return res.status(400).send("To create a username with the custom userIdStrategy you need to pass it");
         }
 
-        const qrBytes: ArrayBuffer = await this.createQRCode(RegistrationType.Newcommer, query.userId as string | undefined, query.sId as string | undefined, password);
+        const response: [ArrayBuffer, string] = await this.createQRCode(RegistrationType.Newcommer, query.userId as string | undefined, query.sId as string | undefined);
 
-        return res.status(200).send(arrayBufferToStringArray(qrBytes));
+        if (this.configuration.passwordStrategy === "ownPassword") {
+            this.passwordStore!.set(response[1], { userId: query.userId as string | undefined, pw: password! });
+        }
+
+        return res.status(200).send(arrayBufferToStringArray(response[0]));
     }
 
-    private async createQRCode(type: RegistrationType, userId?: string, sId?: string, password?: string): Promise<ArrayBuffer> {
+    private async createQRCode(type: RegistrationType, userId?: string, sId?: string): Promise<[ArrayBuffer, string]> {
         const identity = (await this.runtime.transportServices.account.getIdentityInfo()).value;
 
         const sharableDisplayName = await this.getOrCreateConnectorDisplayName(identity.address, this.configuration.displayName);
@@ -337,7 +348,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         const requestPlausible = await this.runtime.consumptionServices.outgoingRequests.canCreate({ content: onNewRelationship });
 
         if (!requestPlausible.value.isSuccess) {
-            return new ArrayBuffer(0);
+            return [new ArrayBuffer(0), ""];
         }
         // Template erstellen
         const template = await this.runtime.transportServices.relationshipTemplates.createOwnRelationshipTemplate({
@@ -349,8 +360,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     // eslint-disable-next-line @typescript-eslint/naming-convention
                     __createdByConnectorModule: true,
                     webSessionId: sId,
-                    type: type,
-                    password
+                    type: type
                 },
                 onNewRelationship,
                 onExistingRelationship: {
@@ -374,7 +384,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
         const image = await this.runtime.transportServices.relationshipTemplates.createTokenQrCodeForOwnTemplate({ templateId: template.value.id });
 
-        return Buffer.from(image.value.qrCodeBytes, "base64");
+        return [Buffer.from(image.value.qrCodeBytes, "base64"), template.value.id];
     }
 
     private async getOrCreateConnectorDisplayName(connectorAddress: string, displayName: string) {

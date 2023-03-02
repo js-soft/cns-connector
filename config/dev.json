@@ -49,7 +49,7 @@
                 "username": "admin",
                 "password": "Pa55w0rd"
             },
-            "passwordStrategy": "randomPassword",
+            "passwordStrategy": "ownPassword",
             "userIdStrategy": "custom"
         }
     }
