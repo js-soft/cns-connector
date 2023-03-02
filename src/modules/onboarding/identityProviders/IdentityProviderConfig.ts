@@ -1,6 +1,4 @@
-import { ConnectorRuntimeModuleConfiguration } from "../../ConnectorRuntimeModule";
-
-export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration {
+export interface IdentityProviderConfig {
     baseUrl: string;
     realm: string;
     client: string;

@@ -1,20 +1,30 @@
 /* eslint-disable @typescript-eslint/naming-convention */
 import { ResponseItemGroupJSON, ResponseJSON } from "@nmshd/content";
+import AgentKeepAlive, { HttpsAgent } from "agentkeepalive";
 import AsyncRetry from "async-retry";
-import { AxiosInstance } from "axios";
+import axios, { AxiosInstance } from "axios";
+import { KeycloakUserWithRoles } from "../KeycloakUser";
 import { IdentityProvider, Result } from "./IdentityProvider";
-import { KeycloakUserWithRoles } from "./KeycloakUser";
-import { OnboardingModuleConfig } from "./OnboardingModuleConfig";
+import { IdentityProviderConfig } from "./IdentityProviderConfig";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const randExp = require("randexp");
 
 export enum RegistrationType {
-    Newcommer,
-    Onboarding
+    Newcommer = "Newcommer",
+    Onboarding = "Onboarding"
 }
 
-export class Keycloak implements IdentityProvider {
-    public constructor(private readonly config: OnboardingModuleConfig, private readonly axios: AxiosInstance) {}
+export class KeycloakIdentityProvider implements IdentityProvider {
+    private readonly axios: AxiosInstance;
+    public constructor(private readonly config: IdentityProviderConfig) {
+        this.axios = axios.create({
+            baseURL: this.config.baseUrl,
+            httpAgent: new AgentKeepAlive(),
+            httpsAgent: new HttpsAgent(),
+            validateStatus: () => true,
+            maxRedirects: 0
+        });
+    }
 
     public async initialize(): Promise<void> {
         const token = await AsyncRetry(async () => await this.getAdminToken("master"), {

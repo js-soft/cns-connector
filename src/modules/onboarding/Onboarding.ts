@@ -1,29 +1,20 @@
 import { CreateAttributeRequestItemJSON, RelationshipAttributeConfidentiality, RequestItemGroupJSON, RequestItemJSONDerivations, RequestJSON, ResponseJSON } from "@nmshd/content";
 import { OutgoingRequestCreatedAndCompletedEvent } from "@nmshd/runtime";
-import AgentKeepAlive, { HttpsAgent } from "agentkeepalive";
-import axios from "axios";
 import { ParamsDictionary, Request, Response } from "express-serve-static-core";
 import { DateTime } from "luxon";
 import { ParsedQs } from "qs";
-import { ConnectorRuntimeModule } from "../../ConnectorRuntimeModule";
+import { ConnectorRuntimeModule, ConnectorRuntimeModuleConfiguration } from "../../ConnectorRuntimeModule";
 import { HttpMethod } from "../../infrastructure";
-import { IdentityProvider, Result } from "./IdentityProvider";
-import { Keycloak, RegistrationType } from "./Keycloak";
-import { OnboardingModuleConfig } from "./OnboardingModuleConfig";
+import { OnboardingCompletedEvent, RegistrationCompletedEvent } from "./events";
+import { IdentityProvider, IdentityProviderConfig, KeycloakIdentityProvider, RegistrationType, Result } from "./identityProviders";
+
+export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, IdentityProviderConfig {}
 
 export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleConfig> {
     private idp: IdentityProvider;
 
     public async init(): Promise<void> {
-        const axiosInstance = axios.create({
-            baseURL: this.configuration.baseUrl,
-            httpAgent: new AgentKeepAlive(),
-            httpsAgent: new HttpsAgent(),
-            validateStatus: () => true,
-            maxRedirects: 0
-        });
-
-        this.idp = new Keycloak(this.configuration, axiosInstance);
+        this.idp = new KeycloakIdentityProvider(this.configuration);
 
         try {
             await this.idp.initialize();
@@ -56,7 +47,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
         const templateId = data.source!.reference;
 
-        const relationship = (await this.runtime.transportServices.relationships.getRelationship({ id: templateId })).value;
+        // This only works if you can guarantee that the template is only used once (max num of allocations: 1)
+        const relationship = (await this.runtime.transportServices.relationships.getRelationships({ query: { "template.id": templateId } })).value[0];
 
         const template = (await this.runtime.transportServices.relationshipTemplates.getRelationshipTemplate({ id: templateId })).value;
 
@@ -77,7 +69,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
         const itemGroup = data.content.items[0] as RequestItemGroupJSON;
 
-        const username = ((itemGroup.items[1] as CreateAttributeRequestItemJSON).attribute.value as any).value as string;
+        const userId = ((itemGroup.items[1] as CreateAttributeRequestItemJSON).attribute.value as any).value as string;
 
         const type = metadata.type;
 
@@ -88,7 +80,6 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
         const change: ResponseJSON = data.response!.content;
 
-        // TODO: At the end of handling the event we have to initiate our own event to trigger the webhook informing the endclient about the result.
         switch (type) {
             case RegistrationType.Newcommer:
                 let password: string;
@@ -96,33 +87,56 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     case "securePassword": {
                         // TODO: implement secure password generation
                         password = "secure";
+                        break;
                     }
                     case "randomPassword": {
                         // TODO: implement random password generation
                         password = "random";
+                        break;
                     }
                     case "ownPassword": {
                         password = metadata.password;
+                        break;
                     }
                 }
-                const registrationResult = await this.idp.register(change, username, password);
+                const registrationResult = await this.idp.register(change, userId, password);
                 switch (registrationResult) {
                     case Result.Success: {
                         await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: undefined });
+                        this.runtime.eventBus.publish(
+                            new RegistrationCompletedEvent({
+                                userId,
+                                sessionId: metadata.webSessionId,
+                                password: metadata.password
+                            })
+                        );
                     }
                     case Result.Error: {
-                        await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: undefined });
+                        const result = await this.runtime.transportServices.relationships.rejectRelationshipChange({
+                            relationshipId: relationship.id,
+                            changeId,
+                            content: {}
+                        });
+                        this.logger.info(result);
+                        // TODO: Extend RegistrationCompletedEvent so that it can send error messages
                     }
                 }
                 break;
             case RegistrationType.Onboarding:
-                const onboardingResult = await this.idp.onboard(change, username);
+                const onboardingResult = await this.idp.onboard(change, userId);
                 switch (onboardingResult) {
                     case Result.Success: {
                         await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: undefined });
+                        this.runtime.eventBus.publish(
+                            new OnboardingCompletedEvent({
+                                userId,
+                                sessionId: metadata.webSessionId
+                            })
+                        );
                     }
                     case Result.Error: {
                         await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: undefined });
+                        // TODO: Extend OnboardingCompletedEvent so that it can send error messages
                     }
                 }
                 break;
@@ -138,7 +152,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         const user = await this.idp.getUser(query.userId as string);
 
         if (query.userId && user) {
-            const qrBytes: ArrayBuffer = await this.createRegistrationQRCode(RegistrationType.Newcommer, query.userId as string, query.sId as string | undefined);
+            const qrBytes: ArrayBuffer = await this.createQRCode(RegistrationType.Newcommer, query.userId as string, query.sId as string | undefined);
 
             return res.send(arrayBufferToStringArray(qrBytes)).status(200);
         }
@@ -171,12 +185,12 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             return res.status(400).send("To create a username with the custom userIdStrategy you need to pass it");
         }
 
-        const qrBytes: ArrayBuffer = await this.createRegistrationQRCode(RegistrationType.Newcommer, query.userId as string | undefined, query.sId as string | undefined, password);
+        const qrBytes: ArrayBuffer = await this.createQRCode(RegistrationType.Newcommer, query.userId as string | undefined, query.sId as string | undefined, password);
 
         return res.status(200).send(arrayBufferToStringArray(qrBytes));
     }
 
-    private async createRegistrationQRCode(type: RegistrationType, userId?: string, sId?: string, password?: string): Promise<ArrayBuffer> {
+    private async createQRCode(type: RegistrationType, userId?: string, sId?: string, password?: string): Promise<ArrayBuffer> {
         const identity = (await this.runtime.transportServices.account.getIdentityInfo()).value;
 
         const sharableDisplayName = await this.getOrCreateConnectorDisplayName(identity.address, this.configuration.displayName);
@@ -204,7 +218,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     key: "userName",
                     value: {
                         "@type": "ProprietaryString",
-                        title: "TODO",
+                        title: `${this.configuration.displayName}.userId`,
                         value: userId
                     },
                     isTechnical: false,
