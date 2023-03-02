@@ -16,9 +16,10 @@ services:
     depends_on:
       - mongo
       - mongo-express
+      - keycloaky
     stdin_open: true
     tty: true
-  
+    
   keycloaky:
     container_name: keycloaky
     image: quay.io/keycloak/keycloak:latest
