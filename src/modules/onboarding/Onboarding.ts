@@ -1,4 +1,5 @@
 import { CreateAttributeRequestItemJSON, RelationshipAttributeConfidentiality, RequestItemGroupJSON, RequestItemJSONDerivations, RequestJSON, ResponseJSON } from "@nmshd/content";
+import { CryptoPasswordGenerator } from "@nmshd/crypto";
 import { OutgoingRequestCreatedAndCompletedEvent } from "@nmshd/runtime";
 import { ParamsDictionary, Request, Response } from "express-serve-static-core";
 import { DateTime } from "luxon";
@@ -89,13 +90,11 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 let password: string;
                 switch (this.configuration.passwordStrategy) {
                     case "securePassword": {
-                        // TODO: implement secure password generation
-                        password = "secure";
+                        password = await CryptoPasswordGenerator.createStrongPassword();
                         break;
                     }
                     case "randomPassword": {
-                        // TODO: implement random password generation
-                        password = "random";
+                        password = await CryptoPasswordGenerator.createElementPassword();
                         break;
                     }
                     case "ownPassword": {
@@ -113,8 +112,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                 changeId,
                                 content: {}
                             });
-                        this.runtime.eventBus.publish(
-                            new RegistrationCompletedEvent({
+                            this.runtime.eventBus.publish(
+                                new RegistrationCompletedEvent({
                                     success: false,
                                     data: undefined
                                 })
@@ -124,12 +123,12 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                 new RegistrationCompletedEvent({
                                     success: true,
                                     data: {
-                                userId,
-                                sessionId: metadata.webSessionId,
+                                        userId,
+                                        sessionId: metadata.webSessionId,
                                         password
                                     }
-                            })
-                        );
+                                })
+                            );
                         }
                         break;
                     }
@@ -156,8 +155,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                         const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         if (r.isError) {
                             await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
-                        this.runtime.eventBus.publish(
-                            new OnboardingCompletedEvent({
+                            this.runtime.eventBus.publish(
+                                new OnboardingCompletedEvent({
                                     success: false,
                                     data: undefined
                                 })
@@ -167,11 +166,11 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                 new OnboardingCompletedEvent({
                                     success: true,
                                     data: {
-                                userId,
-                                sessionId: metadata.webSessionId
+                                        userId,
+                                        sessionId: metadata.webSessionId
                                     }
-                            })
-                        );
+                                })
+                            );
                         }
                         break;
                     }
