@@ -106,14 +106,31 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 const registrationResult = await this.idp.register(change, userId, password);
                 switch (registrationResult) {
                     case Result.Success: {
-                        await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
+                        const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
+                        if (r.isError) {
+                            await this.runtime.transportServices.relationships.rejectRelationshipChange({
+                                relationshipId: relationship.id,
+                                changeId,
+                                content: {}
+                            });
                         this.runtime.eventBus.publish(
                             new RegistrationCompletedEvent({
+                                    success: false,
+                                    data: undefined
+                                })
+                            );
+                        } else {
+                            this.runtime.eventBus.publish(
+                                new RegistrationCompletedEvent({
+                                    success: true,
+                                    data: {
                                 userId,
                                 sessionId: metadata.webSessionId,
-                                password: metadata.password
+                                        password
+                                    }
                             })
                         );
+                        }
                         break;
                     }
                     case Result.Error: {
@@ -122,7 +139,12 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                             changeId,
                             content: {}
                         });
-                        // TODO: Extend RegistrationCompletedEvent so that it can send error messages
+                        this.runtime.eventBus.publish(
+                            new RegistrationCompletedEvent({
+                                success: false,
+                                data: undefined
+                            })
+                        );
                         break;
                     }
                 }
@@ -131,18 +153,36 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 const onboardingResult = await this.idp.onboard(change, userId);
                 switch (onboardingResult) {
                     case Result.Success: {
-                        await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
+                        const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
+                        if (r.isError) {
+                            await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         this.runtime.eventBus.publish(
                             new OnboardingCompletedEvent({
+                                    success: false,
+                                    data: undefined
+                                })
+                            );
+                        } else {
+                            this.runtime.eventBus.publish(
+                                new OnboardingCompletedEvent({
+                                    success: true,
+                                    data: {
                                 userId,
                                 sessionId: metadata.webSessionId
+                                    }
                             })
                         );
+                        }
                         break;
                     }
                     case Result.Error: {
                         await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
-                        // TODO: Extend OnboardingCompletedEvent so that it can send error messages
+                        this.runtime.eventBus.publish(
+                            new OnboardingCompletedEvent({
+                                success: false,
+                                data: undefined
+                            })
+                        );
                         break;
                     }
                 }

@@ -1,13 +1,18 @@
 import { DataEvent } from "@js-soft/ts-utils";
 
-export interface OnboardingCompletedEventData {
+interface OnboardingCompletedEventData {
     userId: string;
     sessionId?: string;
 }
 
-export class OnboardingCompletedEvent extends DataEvent<OnboardingCompletedEventData> {
+interface OnboardingResult {
+    success: boolean;
+    data: OnboardingCompletedEventData | undefined;
+}
+
+export class OnboardingCompletedEvent extends DataEvent<OnboardingResult> {
     private static readonly namespace = "onboarding.onboardingCompleted";
-    public constructor(data: OnboardingCompletedEventData) {
+    public constructor(data: OnboardingResult) {
         super(OnboardingCompletedEvent.namespace, data);
     }
 }
