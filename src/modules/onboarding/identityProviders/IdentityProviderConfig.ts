@@ -18,4 +18,5 @@ export interface IdentityProviderConfig {
               opt: string[] | undefined;
           }
         | undefined;
+    automateSetup: boolean;
 }

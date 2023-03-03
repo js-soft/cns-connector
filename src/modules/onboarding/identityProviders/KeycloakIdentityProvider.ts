@@ -32,14 +32,19 @@ export class KeycloakIdentityProvider implements IdentityProvider {
             minTimeout: 5000
         });
         if (!(await this.isRealmSetup(token))) {
+            if (!this.config.automateSetup) throw new Error(`The given realm: ${this.config.realm} is not setup.`);
             await this.setupRealm(token);
         }
         let client;
         if (!(client = await this.isClientSetup(token))) {
+            if (!this.config.automateSetup) throw new Error(`The given client: ${this.config.client} is not setup.`);
             await this.setupClient(token);
         } else if (!this.isClientConfigCorrect(client)) {
+            if (!this.config.automateSetup) throw new Error(`The given client: ${this.config.client} is not configured correctly.`);
             await this.updateClientConfig(client, token);
         }
+        // This function will throw an error if the permissions are not set up correctly and autosetup is disabled.
+        // We do it there so the error message is as describing as possible.
         const clientId = await this.checkPermissions(token);
         if (clientId) await this.configurePermissions(clientId, token);
         if (!(await this.hasAdminUser(token))) {
@@ -335,7 +340,9 @@ export class KeycloakIdentityProvider implements IdentityProvider {
         const clientPermissions = await this.axios.get(`/admin/realms/${this.config.realm}/clients/${client.id}/management/permissions`, {
             headers: { authorization: `Bearer ${token}` }
         });
+
         if (!clientPermissions.data.enabled) {
+            if (!this.config.automateSetup) throw new Error(`Client permissions are not enabled for client: ${this.config.client}`);
             return client.id;
         }
 
@@ -349,6 +356,7 @@ export class KeycloakIdentityProvider implements IdentityProvider {
         if (policyIds.data.some((el: any) => el.name.startsWith("token-exchange.permission.client."))) {
             return;
         }
+        if (!this.config.automateSetup) throw new Error(`Client ${this.config.client} does not hate token-exchange permision`);
         return client.id;
     }
 
