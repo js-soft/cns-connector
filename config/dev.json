@@ -50,7 +50,8 @@
                 "password": "Pa55w0rd"
             },
             "passwordStrategy": "ownPassword",
-            "userIdStrategy": "custom"
+            "userIdStrategy": "custom",
+            "login": true
         }
     }
 }
