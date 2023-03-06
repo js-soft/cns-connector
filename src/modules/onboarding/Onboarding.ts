@@ -8,13 +8,14 @@ import {
     ResponseJSON
 } from "@nmshd/content";
 import { CryptoPasswordGenerator } from "@nmshd/crypto";
-import { OutgoingRequestCreatedAndCompletedEvent } from "@nmshd/runtime";
+import { LocalRequestDTO, OutgoingRequestCreatedAndCompletedEvent } from "@nmshd/runtime";
 import { ParamsDictionary, Request, Response } from "express-serve-static-core";
 import { DateTime } from "luxon";
 import { ParsedQs } from "qs";
 import { ConnectorRuntimeModule, ConnectorRuntimeModuleConfiguration } from "../../ConnectorRuntimeModule";
 import { HttpMethod } from "../../infrastructure";
 import { OnboardingCompletedEvent, RegistrationCompletedEvent } from "./events";
+import { LoginCompletedEvent } from "./events/LoginCompletedEvent";
 import { IdentityProvider, IdentityProviderConfig, KeycloakIdentityProvider, RegistrationType, Result } from "./identityProviders";
 
 export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, IdentityProviderConfig {}
@@ -56,13 +57,41 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
     private async handleOutgoingRequestCreatedAndCompleted(event: OutgoingRequestCreatedAndCompletedEvent) {
         const data = event.data;
         const responseSourceType = data.response?.source?.type;
-        if (!responseSourceType || responseSourceType === "Message") {
+        if (!responseSourceType) {
             // We only care about Relationship Changes
             return;
         }
 
-        const changeId = data.response!.source!.reference;
+        if (responseSourceType === "Message") {
+            if (!this.configuration.login) {
+                // Message is only interesting if login is enabled
+                return;
+            }
 
+            const metadata = data.content.metadata as any;
+
+            if (
+                data.content.items[0]["@type"] !== "AuthenticationRequestItem" ||
+                data.content.items[0].title !== "Login Request" ||
+                !metadata ||
+                !metadata.__createdByConnectorModule
+            ) {
+                // This message is not a login request and or not created by us
+                return;
+            }
+
+            const loginResult = await this.handleEnmeshedLogin(data);
+
+            this.runtime.eventBus.publish(
+                new LoginCompletedEvent({
+                    success: loginResult?.tokens ? true : false,
+                    data: loginResult,
+                    sessionId: metadata.sId
+                })
+            );
+            return;
+        }
+        const changeId = data.response!.source!.reference;
         const templateId = data.source!.reference;
 
         // This only works if you can guarantee that the template is only used once (max num of allocations: 1)
@@ -82,6 +111,18 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
         if (!metadata?.__createdByConnectorModule) {
             // We only care about relationships changes initiated by our module which are marked in the metadata
+            return;
+        }
+
+        if (metadata.login) {
+            // This is a failed login request
+            this.runtime.eventBus.publish(
+                new LoginCompletedEvent({
+                    success: false,
+                    data: undefined,
+                    sessionId: metadata.sId
+                })
+            );
             return;
         }
 
@@ -224,6 +265,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
     ): Promise<any> {
         const query = req.query;
         let password: string | undefined;
+
         switch (this.configuration.passwordStrategy) {
             case "ownPassword": {
                 if (!query.password) {
@@ -265,6 +307,22 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         return res.send(arrayBufferToStringArray(qrBytes)).status(200);
     }
 
+    private async handleEnmeshedLogin(request: LocalRequestDTO): Promise<{ target: string; tokens?: string } | undefined> {
+        const peer = request.peer;
+        const relationship = await this.runtime.consumptionServices.attributes.getAttributes({
+            query: {
+                "content.key": "userId",
+                "shareInfo.peer": peer
+            }
+        });
+        if (relationship.isError) {
+            return undefined;
+        }
+        // TODO: remove as any cast
+        const userId = (relationship.value[0].content.value as ProprietaryStringJSON).value;
+        const tokens = await this.idp.login!(userId);
+        return { target: userId, tokens };
+    }
 
     private async createQRCode(type: RegistrationType, userId?: string, sId?: string, login?: boolean): Promise<[ArrayBuffer, string]> {
         const identity = (await this.runtime.transportServices.account.getIdentityInfo()).value;
@@ -426,17 +484,17 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     webSessionId: sId,
                     type: type
                 },
-                    items: [
-                        {
-                            "@type": "AuthenticationRequestItem",
-                            title: "Login Request",
-                            description: "There has been a login request if you did not initiate it please ignore this message and do not approve!",
-                            mustBeAccepted: true,
-                            reqireManualDecision: true
-                        }
-                    ]
+                items: [
+                    {
+                        "@type": "AuthenticationRequestItem",
+                        title: "Login Request",
+                        description: "There has been a login request if you did not initiate it please ignore this message and do not approve!",
+                        mustBeAccepted: true,
+                        reqireManualDecision: true
+                    }
+                ]
             };
-                }
+        }
 
         // Template erstellen
         const template = await this.runtime.transportServices.relationshipTemplates.createOwnRelationshipTemplate({
