@@ -1,4 +1,12 @@
-import { CreateAttributeRequestItemJSON, RelationshipAttributeConfidentiality, RequestItemGroupJSON, RequestItemJSONDerivations, RequestJSON, ResponseJSON } from "@nmshd/content";
+import {
+    CreateAttributeRequestItemJSON,
+    ProprietaryStringJSON,
+    RelationshipAttributeConfidentiality,
+    RequestItemGroupJSON,
+    RequestItemJSONDerivations,
+    RequestJSON,
+    ResponseJSON
+} from "@nmshd/content";
 import { CryptoPasswordGenerator } from "@nmshd/crypto";
 import { OutgoingRequestCreatedAndCompletedEvent } from "@nmshd/runtime";
 import { ParamsDictionary, Request, Response } from "express-serve-static-core";
@@ -34,6 +42,11 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Get, "/registrationQR", false, async (req, res) => {
             await this.handleRegistrationQrRequest(req, res);
         });
+        if (this.configuration.login) {
+            this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Get, "/loginQR", false, async (req, res) => {
+                await this.handleLoginQrRequest(req, res);
+            });
+        }
     }
 
     public start(): void {
@@ -240,7 +253,20 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         return res.status(200).send(arrayBufferToStringArray(response[0]));
     }
 
-    private async createQRCode(type: RegistrationType, userId?: string, sId?: string): Promise<[ArrayBuffer, string]> {
+    /*  This function is responsible for creating a QR-Request for a login with enmeshed.
+     *  To later associate the login request with a given session it needs to be passed in the query.
+     *  This could be done with a proxy that simply ads the session id to the request and forwards it to this module. */
+    private async handleLoginQrRequest(req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>, res: Response<any, Record<string, any>, number>): Promise<any> {
+        const query = req.query;
+        if (!query.sId) {
+            return res.status(400).send("You need to specify the session id to later associate the login reuest with that session.");
+        }
+        const qrBytes: ArrayBuffer = (await this.createQRCode(RegistrationType.Newcommer, undefined, query.sId as string, true))[0];
+        return res.send(arrayBufferToStringArray(qrBytes)).status(200);
+    }
+
+
+    private async createQRCode(type: RegistrationType, userId?: string, sId?: string, login?: boolean): Promise<[ArrayBuffer, string]> {
         const identity = (await this.runtime.transportServices.account.getIdentityInfo()).value;
 
         const sharableDisplayName = await this.getOrCreateConnectorDisplayName(identity.address, this.configuration.displayName);
@@ -265,7 +291,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 attribute: {
                     "@type": "RelationshipAttribute",
                     owner: identity.address,
-                    key: "userName",
+                    key: "userId",
                     value: {
                         "@type": "ProprietaryString",
                         title: `${this.configuration.displayName}.userId`,
@@ -389,24 +415,17 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         if (!requestPlausible.value.isSuccess) {
             return [new ArrayBuffer(0), ""];
         }
-        // Template erstellen
-        const template = await this.runtime.transportServices.relationshipTemplates.createOwnRelationshipTemplate({
-            maxNumberOfAllocations: 1,
-            content: {
-                "@type": "RelationshipTemplateContent",
-                title: "Connector Demo Contact",
+
+        let onExistingRelationship;
+
+        if (this.configuration.login) {
+            onExistingRelationship = {
                 metadata: {
                     // eslint-disable-next-line @typescript-eslint/naming-convention
                     __createdByConnectorModule: true,
                     webSessionId: sId,
                     type: type
                 },
-                onNewRelationship,
-                onExistingRelationship: {
-                    metadata: {
-                        webSessionId: sId,
-                        type: type
-                    },
                     items: [
                         {
                             "@type": "AuthenticationRequestItem",
@@ -416,7 +435,24 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                             reqireManualDecision: true
                         }
                     ]
+            };
                 }
+
+        // Template erstellen
+        const template = await this.runtime.transportServices.relationshipTemplates.createOwnRelationshipTemplate({
+            maxNumberOfAllocations: 1,
+            content: {
+                "@type": "RelationshipTemplateContent",
+                title: "Connector Demo Contact",
+                metadata: {
+                    // eslint-disable-next-line @typescript-eslint/naming-convention
+                    __createdByConnectorModule: true,
+                    login,
+                    webSessionId: sId,
+                    type: type
+                },
+                onNewRelationship,
+                onExistingRelationship: onExistingRelationship
             },
             expiresAt: DateTime.now().plus({ days: 2 }).toISO()
         });
