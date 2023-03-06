@@ -76,6 +76,18 @@ export class KeycloakIdentityProvider implements IdentityProvider {
         return Result.Success;
     }
 
+    public async login(userId: string): Promise<string | undefined> {
+        const user = await this.getUser(userId);
+
+        if (!user) {
+            return undefined;
+        }
+
+        const token = await this.impersonate(user.id);
+
+        return token;
+    }
+
     public async getExistingUserInfo(userId: string, requestedData: string[]): Promise<Map<string, string>> {
         const user = await this.getUser(userId);
 
@@ -103,6 +115,25 @@ export class KeycloakIdentityProvider implements IdentityProvider {
         }
 
         return res;
+    }
+
+    // Impersonate User with admin token
+    private async impersonate(userId: string): Promise<any> {
+        const adminToken = await this.getAdminToken(this.config.realm);
+
+        const urlencoded = new URLSearchParams();
+        urlencoded.append("client_id", "admin-cli");
+        urlencoded.append("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange");
+        urlencoded.append("subject_token", adminToken);
+        urlencoded.append("requested_token_type", "urn:ietf:params:oauth:token-type:refresh_token");
+        urlencoded.append("audience", this.config.client);
+        urlencoded.append("requested_subject", userId);
+
+        const response = await this.axios.post(`/realms/${this.config.realm}/protocol/openid-connect/token`, urlencoded, {
+            headers: { authorization: `Bearer ${adminToken}` }
+        });
+
+        return response.data;
     }
 
     private async updateUser(params: {
