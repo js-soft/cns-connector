@@ -318,7 +318,6 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         if (relationship.isError) {
             return undefined;
         }
-        // TODO: remove as any cast
         const userId = (relationship.value[0].content.value as ProprietaryStringJSON).value;
         const tokens = await this.idp.login!(userId);
         return { target: userId, tokens };
