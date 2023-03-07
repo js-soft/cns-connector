@@ -49,9 +49,9 @@
                 "username": "admin",
                 "password": "Pa55w0rd"
             },
-            "passwordStrategy": "ownPassword",
-            "userIdStrategy": "custom",
-            "login": true
+            "passwordStrategy": "setByRequest",
+            "userIdStrategy": "setByRequest",
+            "authenticateUsersByEnmeshedChallenge": true
         }
     }
 }

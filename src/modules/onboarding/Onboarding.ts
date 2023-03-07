@@ -1,3 +1,4 @@
+import { ApplicationError, Result } from "@js-soft/ts-utils";
 import {
     CreateAttributeRequestItemJSON,
     ProprietaryStringJSON,
@@ -9,6 +10,7 @@ import {
 } from "@nmshd/content";
 import { CryptoPasswordGenerator } from "@nmshd/crypto";
 import { LocalRequestDTO, OutgoingRequestCreatedAndCompletedEvent } from "@nmshd/runtime";
+import { QRCode } from "@nmshd/runtime/dist/useCases/common";
 import { ParamsDictionary, Request, Response } from "express-serve-static-core";
 import { DateTime } from "luxon";
 import { ParsedQs } from "qs";
@@ -16,6 +18,7 @@ import { ConnectorRuntimeModule, ConnectorRuntimeModuleConfiguration } from "../
 import { HttpMethod } from "../../infrastructure";
 import { OnboardingCompletedEvent, RegistrationCompletedEvent } from "./events";
 import { LoginCompletedEvent } from "./events/LoginCompletedEvent";
+import { IdentityProvider, IDPResult, KeycloakClientConfig, KeycloakIdentityProvider, RegistrationType } from "./identityProviders";
 import { OnboardingConfig } from "./OnboardingConfig";
 
 export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig {}
@@ -37,15 +40,18 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             err.stack = e.stack;
             throw err;
         }
-        this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Get, "/onboardingQR", false, async (req, res) => {
-            await this.handleOnboardingQrRequest(req, res);
+        this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Post, "/qrCode", false, async (req, res) => {
+            await this.createQRCode(req, res);
         });
-        this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Get, "/registrationQR", false, async (req, res) => {
-            await this.handleRegistrationQrRequest(req, res);
+        this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Post, "/onboarding", false, async (req, res) => {
+            await this.handleOnboardingRequest(req, res);
         });
-        if (this.configuration.login) {
-            this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Get, "/loginQR", false, async (req, res) => {
-                await this.handleLoginQrRequest(req, res);
+        this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Post, "/registration", false, async (req, res) => {
+            await this.handleRegistrationRequest(req, res);
+        });
+        if (this.configuration.authenticateUsersByEnmeshedChallenge) {
+            this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Post, "/login", false, async (req, res) => {
+                await this.handleLoginRequest(req, res);
             });
         }
     }
@@ -158,7 +164,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 }
                 const registrationResult = await this.idp.register(change, userId, password);
                 switch (registrationResult) {
-                    case Result.Success: {
+                    case IDPResult.Success: {
                         const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         if (r.isError) {
                             await this.runtime.transportServices.relationships.rejectRelationshipChange({
@@ -169,7 +175,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                             this.runtime.eventBus.publish(
                                 new RegistrationCompletedEvent({
                                     success: false,
-                                    data: undefined
+                                    data: undefined,
+                                    errorMessage: "Connector error trying to accept relationship change."
                                 })
                             );
                         } else {
@@ -179,14 +186,15 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                     data: {
                                         userId,
                                         sessionId: metadata.webSessionId,
-                                        password
+                                        password,
+                                        onboardingId: templateId
                                     }
                                 })
                             );
                         }
                         break;
                     }
-                    case Result.Error: {
+                    case IDPResult.Error: {
                         await this.runtime.transportServices.relationships.rejectRelationshipChange({
                             relationshipId: relationship.id,
                             changeId,
@@ -195,7 +203,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                         this.runtime.eventBus.publish(
                             new RegistrationCompletedEvent({
                                 success: false,
-                                data: undefined
+                                data: undefined,
+                                errorMessage: "IDP Error trying to create a new user."
                             })
                         );
                         break;
@@ -205,14 +214,15 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             case RegistrationType.Onboarding:
                 const onboardingResult = await this.idp.onboard(change, userId);
                 switch (onboardingResult) {
-                    case Result.Success: {
+                    case IDPResult.Success: {
                         const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         if (r.isError) {
                             await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                             this.runtime.eventBus.publish(
                                 new OnboardingCompletedEvent({
                                     success: false,
-                                    data: undefined
+                                    data: undefined,
+                                    errorMessage: "Connector error trying to accept relationship change."
                                 })
                             );
                         } else {
@@ -221,19 +231,21 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                     success: true,
                                     data: {
                                         userId,
-                                        sessionId: metadata.webSessionId
+                                        sessionId: metadata.webSessionId,
+                                        onboardingId: templateId
                                     }
                                 })
                             );
                         }
                         break;
                     }
-                    case Result.Error: {
+                    case IDPResult.Error: {
                         await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         this.runtime.eventBus.publish(
                             new OnboardingCompletedEvent({
                                 success: false,
-                                data: undefined
+                                data: undefined,
+                                errorMessage: "IDP Error trying to onboard user."
                             })
                         );
                         break;
@@ -243,39 +255,47 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         }
     }
 
-    private async handleOnboardingQrRequest(
-        req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
-        res: Response<any, Record<string, any>, number>
-    ): Promise<any> {
-        const query = req.query;
+    private async createQRCode(req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>, res: Response<any, Record<string, any>, number>) {
+        const body = req.body;
+        if (!body.data) {
+            res.status(400).send("Specify the truncated reference under the data field.");
+            return;
+        }
+        const qr = await QRCode.from(body.data, "tr");
+        const qrBase64 = qr.asBase64();
+        const imageBuffer = Buffer.from(qrBase64, "base64");
+        res.status(200).send(arrayBufferToStringArray(imageBuffer));
+    }
 
-        const user = await this.idp.getUser(query.userId as string);
-
-        if (query.userId && user) {
-            const qrBytes: ArrayBuffer = (await this.createQRCode(RegistrationType.Newcommer, query.userId as string, query.sId as string | undefined))[0];
-
-            return res.send(arrayBufferToStringArray(qrBytes)).status(200);
+    private async handleOnboardingRequest(req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>, res: Response<any, Record<string, any>, number>): Promise<any> {
+        const body = req.body;
+        const user = await this.idp.getUser(body.userId as string);
+        if (body.userId && user) {
+            const templateResult = await this.createTemplate(RegistrationType.Newcommer, body.userId as string, body.sId as string | undefined);
+            if (templateResult.isError) {
+                return res.status(templateResult.error.code as unknown as number).send(templateResult.error.message);
+            }
+            return res.status(201).send(templateResult.value);
         }
         res.status(404).send("User not found!");
     }
 
-    private async handleRegistrationQrRequest(
+    private async handleRegistrationRequest(
         req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>,
         res: Response<any, Record<string, any>, number>
     ): Promise<any> {
-        const query = req.query;
+        const body = req.body;
         let password: string | undefined;
-
         switch (this.configuration.passwordStrategy) {
-            case "ownPassword": {
-                if (!query.password) {
+            case "setByRequest": {
+                if (!body.password) {
                     return res
                         .status(400)
                         .send(
                             "The module is configured in a way so that you need to pass a password, that will be used to create the account, in order to create a account with enmeshed."
                         );
                 }
-                password = query.password as string;
+                password = body.password as string;
             }
             default: {
                 // Nothing to do here for us since the password will be generated automatically when the relationship is accepted
@@ -286,25 +306,33 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             return res.status(400).send("To create a username with the custom userIdStrategy you need to pass it");
         }
 
-        const response: [ArrayBuffer, string] = await this.createQRCode(RegistrationType.Newcommer, query.userId as string | undefined, query.sId as string | undefined);
+        const templateResponse = await this.createTemplate(RegistrationType.Newcommer, body.userId as string | undefined, body.sId as string | undefined);
+
+        if (templateResponse.isError) {
+            return res.status(templateResponse.error.code as unknown as number).send(templateResponse.error.message);
+        }
 
         if (this.configuration.passwordStrategy === "setByRequest") {
             this.passwordStore!.set(templateResponse.value.templateId, { userId: body.userId as string | undefined, pw: password! });
         }
 
-        return res.status(200).send(arrayBufferToStringArray(response[0]));
+        return res.status(201).send(templateResponse.value);
     }
 
     /*  This function is responsible for creating a QR-Request for a login with enmeshed.
      *  To later associate the login request with a given session it needs to be passed in the query.
      *  This could be done with a proxy that simply ads the session id to the request and forwards it to this module. */
-    private async handleLoginQrRequest(req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>, res: Response<any, Record<string, any>, number>): Promise<any> {
-        const query = req.query;
-        if (!query.sId) {
+    private async handleLoginRequest(req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>, res: Response<any, Record<string, any>, number>): Promise<any> {
+        const body = req.body;
+        if (!body.sId) {
             return res.status(400).send("You need to specify the session id to later associate the login reuest with that session.");
         }
-        const qrBytes: ArrayBuffer = (await this.createQRCode(RegistrationType.Newcommer, undefined, query.sId as string, true))[0];
-        return res.send(arrayBufferToStringArray(qrBytes)).status(200);
+        const templateResult = await this.createTemplate(RegistrationType.Newcommer, undefined, body.sId as string, true);
+
+        if (templateResult.isError) {
+            return res.status(templateResult.error.code as unknown as number).send(templateResult.error.message);
+        }
+        return res.status(201).send(templateResult.value);
     }
 
     private async handleEnmeshedLogin(request: LocalRequestDTO): Promise<{ target: string; tokens?: string } | undefined> {
@@ -323,7 +351,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         return { target: userId, tokens };
     }
 
-    private async createQRCode(type: RegistrationType, userId?: string, sId?: string, login?: boolean): Promise<[ArrayBuffer, string]> {
+    private async createTemplate(type: RegistrationType, userId?: string, sId?: string, login?: boolean): Promise<Result<{ reference: string; templateId: string }>> {
         const identity = (await this.runtime.transportServices.account.getIdentityInfo()).value;
 
         const sharableDisplayName = await this.getOrCreateConnectorDisplayName(identity.address, this.configuration.displayName);
@@ -469,8 +497,12 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         };
         const requestPlausible = await this.runtime.consumptionServices.outgoingRequests.canCreate({ content: onNewRelationship });
 
+        if (!requestPlausible.isSuccess) {
+            return Result.fail(requestPlausible.error);
+        }
+
         if (!requestPlausible.value.isSuccess) {
-            return [new ArrayBuffer(0), ""];
+            return Result.fail(new ApplicationError("400", requestPlausible.value.message ?? ""));
         }
 
         let onExistingRelationship;
@@ -514,9 +546,15 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             expiresAt: DateTime.now().plus({ days: 2 }).toISO()
         });
 
-        const image = await this.runtime.transportServices.relationshipTemplates.createTokenQrCodeForOwnTemplate({ templateId: template.value.id });
+        if (template.isError) {
+            return Result.fail(requestPlausible.error);
+        }
 
-        return [Buffer.from(image.value.qrCodeBytes, "base64"), template.value.id];
+        const token = await this.runtime.transportServices.relationshipTemplates.createTokenForOwnTemplate({ templateId: template.value.id });
+
+        this.logger.info(token.value);
+
+        return Result.ok({ reference: token.value.truncatedReference, templateId: template.value.id });
     }
 
     private async getOrCreateConnectorDisplayName(connectorAddress: string, displayName: string) {

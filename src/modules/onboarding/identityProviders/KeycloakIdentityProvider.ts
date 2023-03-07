@@ -4,7 +4,7 @@ import AgentKeepAlive, { HttpsAgent } from "agentkeepalive";
 import AsyncRetry from "async-retry";
 import axios, { AxiosInstance } from "axios";
 import { KeycloakUserWithRoles } from "../KeycloakUser";
-import { IdentityProvider, Result } from "./IdentityProvider";
+import { IdentityProvider, IDPResult } from "./IdentityProvider";
 import { KeycloakClientConfig } from "./IdentityProviderConfig";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const randExp = require("randexp");
@@ -52,18 +52,18 @@ export class KeycloakIdentityProvider implements IdentityProvider {
         }
     }
 
-    public async onboard(change: ResponseJSON, userId: string): Promise<Result> {
+    public async onboard(change: ResponseJSON, userId: string): Promise<IDPResult> {
         const userData = getUserData(change, userId);
 
         const status = await this.updateUser(userData);
 
         if (status !== 204) {
-            return Result.Error;
+            return IDPResult.Error;
         }
-        return Result.Success;
+        return IDPResult.Success;
     }
 
-    public async register(change: ResponseJSON, userId: string, password: string): Promise<Result> {
+    public async register(change: ResponseJSON, userId: string, password: string): Promise<IDPResult> {
         const userData = getUserData(change, userId);
 
         const status = await this.createUser({
@@ -71,9 +71,9 @@ export class KeycloakIdentityProvider implements IdentityProvider {
             ...{ password: password }
         });
         if (status !== 201) {
-            return Result.Error;
+            return IDPResult.Error;
         }
-        return Result.Success;
+        return IDPResult.Success;
     }
 
     public async login(userId: string): Promise<string | undefined> {
