@@ -5,7 +5,7 @@ import AsyncRetry from "async-retry";
 import axios, { AxiosInstance } from "axios";
 import { KeycloakUserWithRoles } from "../KeycloakUser";
 import { IdentityProvider, Result } from "./IdentityProvider";
-import { IdentityProviderConfig } from "./IdentityProviderConfig";
+import { KeycloakClientConfig } from "./IdentityProviderConfig";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const randExp = require("randexp");
 
@@ -16,7 +16,7 @@ export enum RegistrationType {
 
 export class KeycloakIdentityProvider implements IdentityProvider {
     private readonly axios: AxiosInstance;
-    public constructor(private readonly config: IdentityProviderConfig) {
+    public constructor(private readonly config: KeycloakClientConfig) {
         this.axios = axios.create({
             baseURL: this.config.baseUrl,
             httpAgent: new AgentKeepAlive(),

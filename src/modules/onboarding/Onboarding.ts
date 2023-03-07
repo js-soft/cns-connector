@@ -16,9 +16,9 @@ import { ConnectorRuntimeModule, ConnectorRuntimeModuleConfiguration } from "../
 import { HttpMethod } from "../../infrastructure";
 import { OnboardingCompletedEvent, RegistrationCompletedEvent } from "./events";
 import { LoginCompletedEvent } from "./events/LoginCompletedEvent";
-import { IdentityProvider, IdentityProviderConfig, KeycloakIdentityProvider, RegistrationType, Result } from "./identityProviders";
+import { OnboardingConfig } from "./OnboardingConfig";
 
-export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, IdentityProviderConfig {}
+export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig {}
 
 export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleConfig> {
     private idp: IdentityProvider;
@@ -26,7 +26,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
     public async init(): Promise<void> {
         this.idp = new KeycloakIdentityProvider(this.configuration);
-        if (this.configuration.passwordStrategy === "ownPassword") {
+        if (this.configuration.passwordStrategy === "setByRequest") {
             this.passwordStore = new Map();
         }
 
@@ -63,7 +63,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         }
 
         if (responseSourceType === "Message") {
-            if (!this.configuration.login) {
+            if (!this.configuration.authenticateUsersByEnmeshedChallenge) {
                 // Message is only interesting if login is enabled
                 return;
             }
@@ -143,15 +143,15 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             case RegistrationType.Newcommer:
                 let password: string;
                 switch (this.configuration.passwordStrategy) {
-                    case "securePassword": {
-                        password = await CryptoPasswordGenerator.createStrongPassword();
-                        break;
-                    }
                     case "randomPassword": {
                         password = await CryptoPasswordGenerator.createElementPassword();
                         break;
                     }
-                    case "ownPassword": {
+                    case "randomKey": {
+                        password = await CryptoPasswordGenerator.createStrongPassword();
+                        break;
+                    }
+                    case "setByRequest": {
                         password = this.passwordStore!.get(templateId)!.pw;
                         break;
                     }
@@ -282,14 +282,14 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             }
         }
 
-        if (!query.userId && this.configuration.userIdStrategy === "custom") {
+        if (!body.userId && this.configuration.userIdStrategy === "setByRequest") {
             return res.status(400).send("To create a username with the custom userIdStrategy you need to pass it");
         }
 
         const response: [ArrayBuffer, string] = await this.createQRCode(RegistrationType.Newcommer, query.userId as string | undefined, query.sId as string | undefined);
 
-        if (this.configuration.passwordStrategy === "ownPassword") {
-            this.passwordStore!.set(response[1], { userId: query.userId as string | undefined, pw: password! });
+        if (this.configuration.passwordStrategy === "setByRequest") {
+            this.passwordStore!.set(templateResponse.value.templateId, { userId: body.userId as string | undefined, pw: password! });
         }
 
         return res.status(200).send(arrayBufferToStringArray(response[0]));
@@ -475,7 +475,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
         let onExistingRelationship;
 
-        if (this.configuration.login) {
+        if (this.configuration.authenticateUsersByEnmeshedChallenge) {
             onExistingRelationship = {
                 metadata: {
                     // eslint-disable-next-line @typescript-eslint/naming-convention
