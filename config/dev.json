@@ -50,7 +50,7 @@
                 "password": "Pa55w0rd"
             },
             "passwordStrategy": "setByRequest",
-            "userIdStrategy": "setByRequest",
+            "userIdStrategy": "enmeshedAddress",
             "authenticateUsersByEnmeshedChallenge": true
         }
     }
