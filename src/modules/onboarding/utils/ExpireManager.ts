@@ -11,7 +11,7 @@ export class ExpireManager {
     }
 
     public addItemToExpire(reference: string): void {
-        this.queue.push({
+        this.queue.enqueue({
             deadline: DateTime.now().plus(this.expireTime),
             reference
         });
@@ -20,7 +20,7 @@ export class ExpireManager {
     public retrieveExpiredItems(): string[] {
         const deprecatedItems = [];
         while (this.queue.peek() && this.queue.peek()!.deadline < DateTime.now()) {
-            deprecatedItems.push(this.queue.pop()!.reference);
+            deprecatedItems.push(this.queue.dequeue()!.reference);
         }
         return deprecatedItems;
     }

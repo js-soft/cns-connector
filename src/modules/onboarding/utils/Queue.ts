@@ -13,7 +13,7 @@ export class Queue<T> {
         return this.head?.getValue();
     }
 
-    public pop(): T | undefined {
+    public dequeue(): T | undefined {
         const toReturn = this.head;
         if (this.size === 1) {
             this.head = undefined;
@@ -26,7 +26,7 @@ export class Queue<T> {
         return toReturn?.getValue();
     }
 
-    public push(value: T): void {
+    public enqueue(value: T): void {
         const newNode = new Node(value);
         if (this.size === 0) {
             this.head = newNode;
