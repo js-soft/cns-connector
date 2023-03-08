@@ -5,7 +5,8 @@ interface LoginResult {
     // If the relationship could not be found this will be undefined
     data: TargetDetails | undefined;
     // No matter if success or not the sessionId needs to be communicated to give feedback.
-    sessionId: string;
+    // This will only be undefined if the Loginrequest expired
+    sessionId?: string;
 }
 
 interface TargetDetails {

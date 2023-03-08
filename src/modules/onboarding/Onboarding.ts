@@ -20,15 +20,20 @@ import { OnboardingCompletedEvent, RegistrationCompletedEvent } from "./events";
 import { LoginCompletedEvent } from "./events/LoginCompletedEvent";
 import { IdentityProvider, IDPResult, KeycloakClientConfig, KeycloakIdentityProvider, RegistrationType } from "./identityProviders";
 import { OnboardingConfig } from "./OnboardingConfig";
+import { ExpireManager } from "./utils/ExpireManager";
 
 export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig {}
 
 export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleConfig> {
     private idp: IdentityProvider;
     private passwordStore?: Map<string, { userId?: string; pw: string }>;
+    private sessionStore: Map<string, string>;
+    private expireManager: ExpireManager;
 
     public async init(): Promise<void> {
         this.idp = new KeycloakIdentityProvider(this.configuration);
+        this.sessionStore = new Map();
+        this.expireManager = new ExpireManager({ minutes: 5 });
         if (this.configuration.passwordStrategy === "setByRequest") {
             this.passwordStore = new Map();
         }
@@ -42,22 +47,34 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         }
         this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Post, "/qrCode", false, async (req, res) => {
             await this.createQRCode(req, res);
+            this.cleanupStores();
         });
         this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Post, "/onboarding", false, async (req, res) => {
             await this.handleOnboardingRequest(req, res);
+            this.cleanupStores();
         });
         this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Post, "/registration", false, async (req, res) => {
             await this.handleRegistrationRequest(req, res);
+            this.cleanupStores();
         });
         if (this.configuration.authenticateUsersByEnmeshedChallenge) {
             this.runtime.infrastructure.httpServer.addEndpoint(HttpMethod.Post, "/login", false, async (req, res) => {
                 await this.handleLoginRequest(req, res);
+                this.cleanupStores();
             });
         }
     }
 
     public start(): void {
         this.subscribeToEvent(OutgoingRequestCreatedAndCompletedEvent, this.handleOutgoingRequestCreatedAndCompleted.bind(this));
+    }
+
+    private cleanupStores() {
+        const toDelete = this.expireManager.retrieveExpiredItems();
+        toDelete.forEach((ref) => {
+            this.sessionStore.delete(ref);
+            this.passwordStore?.delete(ref);
+        });
     }
 
     private async handleOutgoingRequestCreatedAndCompleted(event: OutgoingRequestCreatedAndCompletedEvent) {
@@ -115,14 +132,17 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             // We only care about relationships changes initiated by our module which are marked in the metadata
             return;
         }
-
+        const sessionId = this.sessionStore.get(templateId);
+        if (sessionId) {
+            this.sessionStore.delete(templateId);
+        }
         if (metadata.login) {
             // This is a failed login request
             this.runtime.eventBus.publish(
                 new LoginCompletedEvent({
                     success: false,
                     data: undefined,
-                    sessionId: metadata.sId
+                    sessionId
                 })
             );
             return;
@@ -164,6 +184,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     }
                     case "setByRequest": {
                         password = this.passwordStore!.get(templateId)!.pw;
+                        this.passwordStore!.delete(templateId);
                         break;
                     }
                 }
@@ -190,7 +211,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                     success: true,
                                     data: {
                                         userId,
-                                        sessionId: metadata.webSessionId,
+                                        sessionId,
                                         password,
                                         onboardingId: templateId
                                     }
@@ -236,7 +257,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                     success: true,
                                     data: {
                                         userId,
-                                        sessionId: metadata.webSessionId,
+                                        sessionId,
                                         onboardingId: templateId
                                     }
                                 })
@@ -323,6 +344,10 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             this.passwordStore!.set(templateResponse.value.templateId, { userId: body.userId as string | undefined, pw: password! });
         }
 
+        // Only add the template id to expire list if the sId is not set since if it were set the id is allready in the list
+        if (this.configuration.passwordStrategy === "setByRequest" && !body.sId) {
+            this.expireManager.addItemToExpire(templateResponse.value.templateId);
+        }
         return res.status(201).send(templateResponse.value);
     }
 
@@ -519,7 +544,6 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 metadata: {
                     // eslint-disable-next-line @typescript-eslint/naming-convention
                     __createdByConnectorModule: true,
-                    webSessionId: sId,
                     type: type
                 },
                 items: [
@@ -562,6 +586,11 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             return Result.fail(token.error);
         }
 
+        // Safe session id if it is present and add the key to the expire list
+        if (sId) {
+            this.sessionStore.set(template.value.id, sId);
+            this.expireManager.addItemToExpire(template.value.id);
+        }
 
         return Result.ok({ reference: token.value.truncatedReference, templateId: template.value.id });
     }
