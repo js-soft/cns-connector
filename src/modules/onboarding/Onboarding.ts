@@ -99,12 +99,9 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         }
         const changeId = data.response!.source!.reference;
         const templateId = data.source!.reference;
-
         // This only works if you can guarantee that the template is only used once (max num of allocations: 1)
         const relationship = (await this.runtime.transportServices.relationships.getRelationships({ query: { "template.id": templateId } })).value[0];
-
         const template = (await this.runtime.transportServices.relationshipTemplates.getRelationshipTemplate({ id: templateId })).value;
-
         const metadata: any = (
             template.content as {
                 "@type": "RelationshipTemplateContent";
@@ -114,7 +111,6 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 onExistingRelationship?: any;
             }
         ).metadata;
-
         if (!metadata?.__createdByConnectorModule) {
             // We only care about relationships changes initiated by our module which are marked in the metadata
             return;
@@ -131,18 +127,27 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             );
             return;
         }
-
-        const itemGroup = data.content.items[0] as RequestItemGroupJSON;
-
-        const userId = ((itemGroup.items[1] as CreateAttributeRequestItemJSON).attribute.value as any).value as string;
-
         const type = metadata.type;
-
         if (!type) {
             // Relationship changes we initiatet have tho type meta tag
             return;
         }
-
+        const itemGroup = data.content.items[0] as RequestItemGroupJSON;
+        let userId;
+        switch (this.configuration.userIdStrategy) {
+            case "setByRequest": {
+                userId = ((itemGroup.items[1] as CreateAttributeRequestItemJSON).attribute.value as any).value as string;
+                break;
+            }
+            case "enmeshedAddress": {
+                userId = data.peer;
+                break;
+            }
+            case "enmeshedRelationshipId": {
+                userId = relationship.id;
+                break;
+            }
+        }
         const change: ResponseJSON = data.response!.content;
 
         switch (type) {
@@ -306,12 +311,14 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             return res.status(400).send("To create a username with the custom userIdStrategy you need to pass it");
         }
 
-        const templateResponse = await this.createTemplate(RegistrationType.Newcommer, body.userId as string | undefined, body.sId as string | undefined);
-
+        const templateResponse = await this.createTemplate(
+            RegistrationType.Newcommer,
+            this.configuration.userIdStrategy === "setByRequest" ? (body.userId as string) : undefined,
+            body.sId as string | undefined
+        );
         if (templateResponse.isError) {
             return res.status(templateResponse.error.code as unknown as number).send(templateResponse.error.message);
         }
-
         if (this.configuration.passwordStrategy === "setByRequest") {
             this.passwordStore!.set(templateResponse.value.templateId, { userId: body.userId as string | undefined, pw: password! });
         }
@@ -537,7 +544,6 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     // eslint-disable-next-line @typescript-eslint/naming-convention
                     __createdByConnectorModule: true,
                     login,
-                    webSessionId: sId,
                     type: type
                 },
                 onNewRelationship,
@@ -547,12 +553,15 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         });
 
         if (template.isError) {
-            return Result.fail(requestPlausible.error);
+            return Result.fail(template.error);
         }
 
         const token = await this.runtime.transportServices.relationshipTemplates.createTokenForOwnTemplate({ templateId: template.value.id });
 
-        this.logger.info(token.value);
+        if (token.isError) {
+            return Result.fail(token.error);
+        }
+
 
         return Result.ok({ reference: token.value.truncatedReference, templateId: template.value.id });
     }
