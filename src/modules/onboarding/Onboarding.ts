@@ -1,13 +1,5 @@
 import { ApplicationError, Result } from "@js-soft/ts-utils";
-import {
-    CreateAttributeRequestItemJSON,
-    ProprietaryStringJSON,
-    RelationshipAttributeConfidentiality,
-    RequestItemGroupJSON,
-    RequestItemJSONDerivations,
-    RequestJSON,
-    ResponseJSON
-} from "@nmshd/content";
+import { ProprietaryStringJSON, RelationshipAttributeConfidentiality, RequestItemGroupJSON, RequestItemJSONDerivations, RequestJSON, ResponseJSON } from "@nmshd/content";
 import { CryptoPasswordGenerator } from "@nmshd/crypto";
 import { LocalRequestDTO, OutgoingRequestCreatedAndCompletedEvent } from "@nmshd/runtime";
 import { QRCode } from "@nmshd/runtime/dist/useCases/common";
@@ -21,6 +13,12 @@ import { LoginCompletedEvent } from "./events/LoginCompletedEvent";
 import { IdentityProvider, IDPResult, KeycloakClientConfig, KeycloakIdentityProvider, RegistrationType } from "./identityProviders";
 import { OnboardingConfig } from "./OnboardingConfig";
 import { ExpireManager } from "./utils/ExpireManager";
+
+/*  TODO: The Module momentarily uses a wallet attribute to determine if a given enmeshed account is connected to a IDP account.
+ *  This should be the other way around in the future so that the Login still works if the user denies the creation of the userId attribute.
+ *  If we find a way to search a IDP user by custom attribute this can be done. Otherwise this is a design flaw we are unable to fix,
+ *  since it is to unperformant to actually traverse all users to search for a enmeshed address.
+ */
 
 export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig {}
 
@@ -108,6 +106,30 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         }
 
         const storeData = this.store.get(templateId);
+        if (!storeData) {
+            // If we don't have any store data the data has expired we need to communicate this error based on the Type of Template
+            switch (type) {
+                case RegistrationType.Newcommer:
+                    this.runtime.eventBus.publish(
+                        new RegistrationCompletedEvent({
+                            success: false,
+                            data: undefined,
+                            errorMessage: "The template and store data have expired",
+                            onboardingId: templateId
+                        })
+                    );
+                    return;
+                case RegistrationType.Onboarding:
+                    this.runtime.eventBus.publish(
+                        new OnboardingCompletedEvent({
+                            success: false,
+                            data: undefined,
+                            errorMessage: "The template and store data have expired",
+                            onboardingId: templateId
+                        })
+                    );
+                    return;
+            }
         }
         if (metadata.login) {
             // This is a failed login request
@@ -115,47 +137,50 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 new LoginCompletedEvent({
                     success: false,
                     data: undefined,
-                    sessionId
+                    sessionId: storeData!.sessionId,
+                    onboardingId: templateId,
+                    errorMessage: "This enmeshed account is not connected to the "
                 })
             );
             return;
         }
         if (!storeData!.userId) {
-        switch (this.configuration.userIdStrategy) {
+            switch (this.configuration.userIdStrategy) {
                 case "useGivenUserId": {
                     // This should not be possible since we checked if the store data ist still valid and with this config the userId is mandatory
                     throw new Error("User ID not found with config: useGivenUserId and valid store.");
-            }
+                }
                 case "useEnmeshedAddress": {
                     storeData!.userId = data.peer;
-                break;
-            }
+                    break;
+                }
                 case "useEnmeshedRelationshipId": {
                     storeData!.userId = relationship.id;
-                break;
+                    break;
+                }
             }
-        }
         }
         const change: ResponseJSON = data.response!.content;
         const identity = (await this.runtime.transportServices.account.getIdentityInfo()).value;
         switch (type) {
             case RegistrationType.Newcommer:
                 if (!storeData!.password) {
-                switch (this.configuration.passwordStrategy) {
+                    switch (this.configuration.passwordStrategy) {
                         case "generateRandomPassword": {
                             storeData!.password = await CryptoPasswordGenerator.createElementPassword();
-                        break;
-                    }
+                            break;
+                        }
                         case "generateRandomKey": {
                             storeData!.password = await CryptoPasswordGenerator.createStrongPassword();
-                        break;
-                    }
+                            break;
+                        }
                         case "useGivenPassword": {
                             // This should not be possible since we checked if the store data ist still valid and with this config the password is mandatory
                             throw new Error("Password not found with config: useGivenUserId and valid store.");
+                        }
                     }
                 }
-                const registrationResult = await this.idp.register(change, userId, password);
+                const registrationResult = await this.idp.register(change, storeData!.userId, storeData!.password, relationship.peer);
                 switch (registrationResult) {
                     case IDPResult.Success: {
                         const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
@@ -169,7 +194,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                 new RegistrationCompletedEvent({
                                     success: false,
                                     data: undefined,
-                                    errorMessage: "Connector error trying to accept relationship change."
+                                    errorMessage: "Connector error trying to accept relationship change.",
+                                    onboardingId: templateId
                                 })
                             );
                         } else {
@@ -177,13 +203,49 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                 new RegistrationCompletedEvent({
                                     success: true,
                                     data: {
-                                        userId,
-                                        sessionId,
-                                        password,
-                                        onboardingId: templateId
-                                    }
+                                        userId: storeData!.userId,
+                                        sessionId: storeData!.sessionId,
+                                        password: storeData!.password
+                                    },
+                                    onboardingId: templateId
                                 })
                             );
+                            const outgoingRequestResponse = await this.runtime.consumptionServices.outgoingRequests.create({
+                                content: {
+                                    items: [
+                                        {
+                                            "@type": "CreateAttributeRequestItem",
+                                            mustBeAccepted: true,
+                                            attribute: {
+                                                "@type": "RelationshipAttribute",
+                                                owner: identity.address,
+                                                key: "userId",
+                                                value: {
+                                                    "@type": "ProprietaryString",
+                                                    title: `${this.configuration.displayName}.userId`,
+                                                    value: storeData!.userId
+                                                },
+                                                isTechnical: false,
+                                                confidentiality: RelationshipAttributeConfidentiality.Public
+                                            }
+                                        }
+                                    ]
+                                },
+                                peer: relationship.peer
+                            });
+                            if (outgoingRequestResponse.isError) {
+                                this.logger.error(outgoingRequestResponse.error);
+                                return;
+                            }
+                            const content = outgoingRequestResponse.value.content;
+
+                            const messageResponse = await this.runtime.transportServices.messages.sendMessage({
+                                recipients: [relationship.peer],
+                                content
+                            });
+                            if (messageResponse.isError) {
+                                this.logger.error(messageResponse.error);
+                            }
                         }
                         break;
                     }
@@ -197,7 +259,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                             new RegistrationCompletedEvent({
                                 success: false,
                                 data: undefined,
-                                errorMessage: "IDP Error trying to create a new user."
+                                errorMessage: "IDP Error trying to create a new user.",
+                                onboardingId: templateId
                             })
                         );
                         break;
@@ -205,7 +268,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 }
                 break;
             case RegistrationType.Onboarding:
-                const onboardingResult = await this.idp.onboard(change, userId);
+                const onboardingResult = await this.idp.onboard(change, storeData!.userId, relationship.peer);
                 switch (onboardingResult) {
                     case IDPResult.Success: {
                         const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
@@ -215,7 +278,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                 new OnboardingCompletedEvent({
                                     success: false,
                                     data: undefined,
-                                    errorMessage: "Connector error trying to accept relationship change."
+                                    errorMessage: "Connector error trying to accept relationship change.",
+                                    onboardingId: templateId
                                 })
                             );
                         } else {
@@ -223,12 +287,48 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                                 new OnboardingCompletedEvent({
                                     success: true,
                                     data: {
-                                        userId,
-                                        sessionId,
-                                        onboardingId: templateId
-                                    }
+                                        userId: storeData!.userId,
+                                        sessionId: storeData!.sessionId
+                                    },
+                                    onboardingId: templateId
                                 })
                             );
+                            const outgoingRequestResponse = await this.runtime.consumptionServices.outgoingRequests.create({
+                                content: {
+                                    items: [
+                                        {
+                                            "@type": "CreateAttributeRequestItem",
+                                            mustBeAccepted: true,
+                                            attribute: {
+                                                "@type": "RelationshipAttribute",
+                                                owner: identity.address,
+                                                key: "userId",
+                                                value: {
+                                                    "@type": "ProprietaryString",
+                                                    title: `${this.configuration.displayName}.userId`,
+                                                    value: storeData!.userId
+                                                },
+                                                isTechnical: false,
+                                                confidentiality: RelationshipAttributeConfidentiality.Public
+                                            }
+                                        }
+                                    ]
+                                },
+                                peer: relationship.peer
+                            });
+                            if (outgoingRequestResponse.isError) {
+                                this.logger.error(outgoingRequestResponse.error);
+                                return;
+                            }
+                            const requestContent = outgoingRequestResponse.value.content;
+
+                            const messageResponse = await this.runtime.transportServices.messages.sendMessage({
+                                recipients: [relationship.peer],
+                                content: requestContent
+                            });
+                            if (messageResponse.isError) {
+                                this.logger.error(messageResponse.error);
+                            }
                         }
                         break;
                     }
@@ -238,7 +338,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                             new OnboardingCompletedEvent({
                                 success: false,
                                 data: undefined,
-                                errorMessage: "IDP Error trying to onboard user."
+                                errorMessage: "IDP Error trying to onboard user.",
+                                onboardingId: templateId
                             })
                         );
                         break;
@@ -528,7 +629,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         return res.status(201).send(templateResult.value);
     }
 
-    private async handleEnmeshedLogin(request: LocalRequestDTO): Promise<{ target: string; tokens?: string } | undefined> {
+    private async handleEnmeshedLogin(request: LocalRequestDTO): Promise<Result<{ target: string; tokens?: string }>> {
         const peer = request.peer;
         const relationship = await this.runtime.consumptionServices.attributes.getAttributes({
             query: {
@@ -537,11 +638,19 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             }
         });
         if (relationship.isError) {
-            return undefined;
+            return Result.fail(relationship.error);
+        }
+        if (relationship.value.length === 0) {
+            return Result.fail(
+                new ApplicationError(
+                    "error.onboarding.authentication.noAssociatedIdpUserToEnmeshedAddress",
+                    "While handling incomming enmeshed login request: The enmeshed address has an active relationship but is not connected to an IDP account. The user has to onboard enmeshed with an existing account first."
+                )
+            );
         }
         const userId = (relationship.value[0].content.value as ProprietaryStringJSON).value;
         const tokens = await this.idp.login!(userId);
-        return { target: userId, tokens };
+        return Result.ok({ target: userId, tokens });
     }
 
     private async createTemplate(type: RegistrationType, sId: string, userId?: string, login?: boolean): Promise<Result<{ reference: string; templateId: string }>> {
@@ -747,7 +856,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         // Safe session id if it is present and add the key to the expire list
 
         this.store.set(template.value.id, { userId, sessionId: sId, password: undefined });
-            this.expireManager.addItemToExpire(template.value.id);
+        this.expireManager.addItemToExpire(template.value.id);
 
         return Result.ok({ reference: token.value.truncatedReference, templateId: template.value.id });
     }

@@ -3,13 +3,13 @@ import { DataEvent } from "@js-soft/ts-utils";
 interface OnboardingCompletedEventData {
     userId: string;
     sessionId?: string;
-    onboardingId: string;
 }
 
 interface OnboardingResult {
     success: boolean;
     data?: OnboardingCompletedEventData;
     errorMessage?: string;
+    onboardingId: string;
 }
 
 export class OnboardingCompletedEvent extends DataEvent<OnboardingResult> {

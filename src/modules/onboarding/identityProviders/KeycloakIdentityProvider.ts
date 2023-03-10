@@ -52,8 +52,8 @@ export class KeycloakIdentityProvider implements IdentityProvider {
         }
     }
 
-    public async onboard(change: ResponseJSON, userId: string): Promise<IDPResult> {
-        const userData = getUserData(change, userId);
+    public async onboard(change: ResponseJSON, userId: string, enmeshedAddress: string): Promise<IDPResult> {
+        const userData = getUserData(change, userId, enmeshedAddress);
 
         const status = await this.updateUser(userData);
 
@@ -63,8 +63,8 @@ export class KeycloakIdentityProvider implements IdentityProvider {
         return IDPResult.Success;
     }
 
-    public async register(change: ResponseJSON, userId: string, password: string): Promise<IDPResult> {
-        const userData = getUserData(change, userId);
+    public async register(change: ResponseJSON, userId: string, password: string, enmeshedAddress: string): Promise<IDPResult> {
+        const userData = getUserData(change, userId, enmeshedAddress);
 
         const status = await this.createUser({
             ...userData,
@@ -527,7 +527,8 @@ export class KeycloakIdentityProvider implements IdentityProvider {
 
 function getUserData(
     request: ResponseJSON,
-    userId: string
+    userId: string,
+    enmeshedAddress: string
 ): {
     userName: string;
     attributes?: any;
@@ -537,7 +538,9 @@ function getUserData(
 } {
     const retValue = {
         userName: userId,
-        attributes: {},
+        attributes: {
+            enmeshedAddress: enmeshedAddress
+        },
         firstName: undefined,
         lastName: undefined,
         email: undefined
@@ -554,9 +557,6 @@ function getUserData(
             if (item["@type"] === "ReadAttributeAcceptResponseItem" || item["@type"] === "ProposeAttributeAcceptResponseItem") {
                 const el: any = (item as any).attribute;
                 if (el?.value) {
-                    if (!attr.enmeshedAddress) {
-                        Object.assign(attr, { enmeshedAddress: el.owner });
-                    }
                     if (normalKeycloakAttributes.includes(el.value["@type"])) {
                         switch (el.value["@type"]) {
                             case "Surname":

@@ -7,6 +7,8 @@ interface LoginResult {
     // No matter if success or not the sessionId needs to be communicated to give feedback.
     // This will only be undefined if the Loginrequest expired
     sessionId?: string;
+    errorMessage?: string;
+    onboardingId: string;
 }
 
 interface TargetDetails {
