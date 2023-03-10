@@ -79,34 +79,8 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             // We only care about Relationship Changes
             return;
         }
-
         if (responseSourceType === "Message") {
-            if (!this.configuration.authenticateUsersByEnmeshedChallenge) {
-                // Message is only interesting if login is enabled
-                return;
-            }
-
-            const metadata = data.content.metadata as any;
-
-            if (
-                data.content.items[0]["@type"] !== "AuthenticationRequestItem" ||
-                data.content.items[0].title !== "Login Request" ||
-                !metadata ||
-                !metadata.__createdByConnectorModule
-            ) {
-                // This message is not a login request and or not created by us
-                return;
-            }
-
-            const loginResult = await this.handleEnmeshedLogin(data);
-
-            this.runtime.eventBus.publish(
-                new LoginCompletedEvent({
-                    success: loginResult?.tokens ? true : false,
-                    data: loginResult,
-                    sessionId: metadata.sId
-                })
-            );
+            await this.handleIncommingMessage(data);
             return;
         }
         const changeId = data.response!.source!.reference;
@@ -271,6 +245,194 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     }
                 }
                 break;
+        }
+    }
+
+    private async handleIncommingMessage(data: LocalRequestDTO): Promise<void> {
+        const metadata = data.content.metadata as any;
+        if (data.content.items[0]["@type"] !== "AuthenticationRequestItem" || !metadata || !metadata.__createdByConnectorModule) {
+            // This message is not created by us
+            return;
+        }
+        const templateId = data.source?.reference;
+        if (data.content.items[0].title === "Login Request") {
+            if (!this.configuration.authenticateUsersByEnmeshedChallenge) {
+                // Message is only interesting if login is enabled
+                return;
+            }
+            // This should be impossible since the module only produces templates
+            if (!templateId) {
+                throw new Error("Received a message that is marked as created by the module but was not comunicated via template.");
+            }
+            // Check if store data has expired
+            const sessionId = this.store.get(templateId)?.sessionId;
+            if (!sessionId) {
+                this.runtime.eventBus.publish(
+                    new LoginCompletedEvent({
+                        success: false,
+                        data: undefined,
+                        sessionId: undefined,
+                        onboardingId: templateId,
+                        errorMessage: `The template '${templateId}' and associated store data have expired.`
+                    })
+                );
+                return;
+            }
+            const loginResult = await this.handleEnmeshedLogin(data);
+            if (loginResult.isError) {
+                if (loginResult.error.code === "error.onboarding.authentication.noAssociatedIdpUserToEnmeshedAddress") {
+                    this.runtime.eventBus.publish(
+                        new LoginCompletedEvent({
+                            success: false,
+                            data: undefined,
+                            sessionId: sessionId,
+                            onboardingId: templateId,
+                            errorMessage: loginResult.error.message
+                        })
+                    );
+                    return;
+                }
+                throw new Error("Internal Connector error when handling enmeshed login.");
+            }
+            this.runtime.eventBus.publish(
+                new LoginCompletedEvent({
+                    success: loginResult.value.tokens ? true : false,
+                    data: loginResult.value,
+                    sessionId,
+                    onboardingId: templateId
+                })
+            );
+            return;
+        }
+        if (data.content.items[0].title === "Onboarding Request") {
+            if (!templateId) {
+                return;
+            }
+            // if (data.content.)
+            await this.handleIDPOnboardingOfExistingEnmeshedUser(data, templateId);
+        }
+    }
+
+    private async handleIDPOnboardingOfExistingEnmeshedUser(request: LocalRequestDTO, templateId: string) {
+        const peer = request.peer;
+        const relationship = await this.runtime.consumptionServices.attributes.getAttributes({
+            query: {
+                "content.key": "userId",
+                "shareInfo.peer": peer
+            }
+        });
+        if (relationship.isError) {
+            return;
+        }
+        const storeData = this.store.get(templateId);
+        if (relationship.value.length > 0) {
+            this.runtime.eventBus.publish(
+                new OnboardingCompletedEvent({
+                    onboardingId: templateId,
+                    success: false,
+                    data: {
+                        userId: storeData?.userId ?? "",
+                        sessionId: storeData?.sessionId
+                    },
+                    errorMessage:
+                        "The enmeshed account is allready connected to another IDP account. It is curently not supported to have more than one IDP account linked to your enmeshed account."
+                })
+            );
+            return;
+        }
+        // Check if we have the necessary data in store to onboard the user
+        if (!storeData?.userId) {
+            this.runtime.eventBus.publish(
+                new OnboardingCompletedEvent({
+                    onboardingId: templateId,
+                    success: false,
+                    data: undefined,
+                    errorMessage: "The onboarding template and coresponding store data have expired please request a new one."
+                })
+            );
+            return;
+        }
+        const user = await this.idp.getUser(storeData.userId);
+        if (!user) {
+            this.runtime.eventBus.publish(
+                new OnboardingCompletedEvent({
+                    onboardingId: templateId,
+                    success: false,
+                    data: {
+                        userId: storeData.userId,
+                        sessionId: storeData.sessionId
+                    },
+                    errorMessage: "The IDP userId saved in store could not be found."
+                })
+            );
+            return;
+        }
+        const onboardingResponse = await this.idp.onboard(request.response!.content, storeData.userId, request.peer);
+
+        if (onboardingResponse === IDPResult.Error) {
+            this.runtime.eventBus.publish(
+                new OnboardingCompletedEvent({
+                    onboardingId: templateId,
+                    success: false,
+                    data: {
+                        userId: storeData.userId,
+                        sessionId: storeData.sessionId
+                    },
+                    errorMessage: "Unable to update the IDP user."
+                })
+            );
+        }
+
+        this.runtime.eventBus.publish(
+            new OnboardingCompletedEvent({
+                onboardingId: templateId,
+                success: true,
+                data: {
+                    userId: storeData.userId,
+                    sessionId: storeData.sessionId
+                }
+            })
+        );
+        // After onboarding the user we now need to save the userId in the enmeshed wallet
+        const identityResponse = await this.runtime.transportServices.account.getIdentityInfo();
+        if (identityResponse.isError) {
+            throw new Error(identityResponse.error.message);
+        }
+        const outgoingRequestResponse = await this.runtime.consumptionServices.outgoingRequests.create({
+            content: {
+                items: [
+                    {
+                        "@type": "CreateAttributeRequestItem",
+                        mustBeAccepted: true,
+                        attribute: {
+                            "@type": "RelationshipAttribute",
+                            owner: identityResponse.value.address,
+                            key: "userId",
+                            value: {
+                                "@type": "ProprietaryString",
+                                title: `${this.configuration.displayName}.userId`,
+                                value: storeData.userId
+                            },
+                            isTechnical: false,
+                            confidentiality: RelationshipAttributeConfidentiality.Public
+                        }
+                    }
+                ]
+            },
+            peer: peer
+        });
+        if (outgoingRequestResponse.isError) {
+            this.logger.error(outgoingRequestResponse.error);
+            return;
+        }
+        const requestContent = outgoingRequestResponse.value.content;
+
+        const messageResponse = await this.runtime.transportServices.messages.sendMessage({
+            recipients: [peer],
+            content: requestContent
+        });
+        if (messageResponse.isError) {
+            this.logger.error(messageResponse.error);
         }
     }
 
@@ -519,7 +681,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
         let onExistingRelationship;
 
-        if (this.configuration.authenticateUsersByEnmeshedChallenge) {
+        if (this.configuration.authenticateUsersByEnmeshedChallenge && type !== RegistrationType.Onboarding) {
             onExistingRelationship = {
                 metadata: {
                     // eslint-disable-next-line @typescript-eslint/naming-convention
@@ -530,14 +692,30 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     {
                         "@type": "AuthenticationRequestItem",
                         title: "Login Request",
-                        description: "There has been a login request if you did not initiate it please ignore this message and do not approve!",
+                        description: "There has been a login request if you did not initiate it please ignore this message and do not approve.",
+                        mustBeAccepted: true,
+                        reqireManualDecision: true
+                    }
+                ]
+            };
+        } else if (this.configuration.authenticateUsersByEnmeshedChallenge) {
+            onExistingRelationship = {
+                metadata: {
+                    // eslint-disable-next-line @typescript-eslint/naming-convention
+                    __createdByConnectorModule: true,
+                    type: type
+                },
+                items: [
+                    {
+                        "@type": "AuthenticationRequestItem",
+                        title: "Onboarding Request",
+                        description: "There has been an onboarding request to connect your enmeshed account to an existing user.",
                         mustBeAccepted: true,
                         reqireManualDecision: true
                     }
                 ]
             };
         }
-
         // Template erstellen
         const template = await this.runtime.transportServices.relationshipTemplates.createOwnRelationshipTemplate({
             maxNumberOfAllocations: 1,
