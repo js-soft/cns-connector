@@ -49,9 +49,10 @@
                 "username": "admin",
                 "password": "Pa55w0rd"
             },
-            "passwordStrategy": "setByRequest",
-            "userIdStrategy": "enmeshedAddress",
-            "authenticateUsersByEnmeshedChallenge": true
+            "passwordStrategy": "useGivenPassword",
+            "userIdStrategy": "useEnmeshedAddress",
+            "authenticateUsersByEnmeshedChallenge": true,
+            "templateExpiresAfterXMinutes": 5
         }
     }
 }

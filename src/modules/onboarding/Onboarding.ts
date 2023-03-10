@@ -26,17 +26,13 @@ export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfigurat
 
 export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleConfig> {
     private idp: IdentityProvider;
-    private passwordStore?: Map<string, { userId?: string; pw: string }>;
-    private sessionStore: Map<string, string>;
+    private store: Map<string, { userId?: string; password?: string; sessionId: string }>;
     private expireManager: ExpireManager;
 
     public async init(): Promise<void> {
         this.idp = new KeycloakIdentityProvider(this.configuration);
-        this.sessionStore = new Map();
-        this.expireManager = new ExpireManager({ minutes: 5 });
-        if (this.configuration.passwordStrategy === "setByRequest") {
-            this.passwordStore = new Map();
-        }
+        this.store = new Map();
+        this.expireManager = new ExpireManager({ minutes: this.configuration.templateExpiresAfterXMinutes });
 
         try {
             await this.idp.initialize();
@@ -72,8 +68,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
     private cleanupStores() {
         const toDelete = this.expireManager.retrieveExpiredItems();
         toDelete.forEach((ref) => {
-            this.sessionStore.delete(ref);
-            this.passwordStore?.delete(ref);
+            this.store.delete(ref);
         });
     }
 
@@ -132,9 +127,13 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             // We only care about relationships changes initiated by our module which are marked in the metadata
             return;
         }
-        const sessionId = this.sessionStore.get(templateId);
-        if (sessionId) {
-            this.sessionStore.delete(templateId);
+        const type = metadata.type;
+        if (!type) {
+            // Relationship changes we initiatet have the type meta tag
+            return;
+        }
+
+        const storeData = this.store.get(templateId);
         }
         if (metadata.login) {
             // This is a failed login request
@@ -147,45 +146,39 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             );
             return;
         }
-        const type = metadata.type;
-        if (!type) {
-            // Relationship changes we initiatet have tho type meta tag
-            return;
-        }
-        const itemGroup = data.content.items[0] as RequestItemGroupJSON;
-        let userId;
+        if (!storeData!.userId) {
         switch (this.configuration.userIdStrategy) {
-            case "setByRequest": {
-                userId = ((itemGroup.items[1] as CreateAttributeRequestItemJSON).attribute.value as any).value as string;
+                case "useGivenUserId": {
+                    // This should not be possible since we checked if the store data ist still valid and with this config the userId is mandatory
+                    throw new Error("User ID not found with config: useGivenUserId and valid store.");
+            }
+                case "useEnmeshedAddress": {
+                    storeData!.userId = data.peer;
                 break;
             }
-            case "enmeshedAddress": {
-                userId = data.peer;
+                case "useEnmeshedRelationshipId": {
+                    storeData!.userId = relationship.id;
                 break;
             }
-            case "enmeshedRelationshipId": {
-                userId = relationship.id;
-                break;
-            }
+        }
         }
         const change: ResponseJSON = data.response!.content;
-
+        const identity = (await this.runtime.transportServices.account.getIdentityInfo()).value;
         switch (type) {
             case RegistrationType.Newcommer:
-                let password: string;
+                if (!storeData!.password) {
                 switch (this.configuration.passwordStrategy) {
-                    case "randomPassword": {
-                        password = await CryptoPasswordGenerator.createElementPassword();
+                        case "generateRandomPassword": {
+                            storeData!.password = await CryptoPasswordGenerator.createElementPassword();
                         break;
                     }
-                    case "randomKey": {
-                        password = await CryptoPasswordGenerator.createStrongPassword();
+                        case "generateRandomKey": {
+                            storeData!.password = await CryptoPasswordGenerator.createStrongPassword();
                         break;
                     }
-                    case "setByRequest": {
-                        password = this.passwordStore!.get(templateId)!.pw;
-                        this.passwordStore!.delete(templateId);
-                        break;
+                        case "useGivenPassword": {
+                            // This should not be possible since we checked if the store data ist still valid and with this config the password is mandatory
+                            throw new Error("Password not found with config: useGivenUserId and valid store.");
                     }
                 }
                 const registrationResult = await this.idp.register(change, userId, password);
@@ -295,9 +288,15 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
 
     private async handleOnboardingRequest(req: Request<ParamsDictionary, any, any, ParsedQs, Record<string, any>>, res: Response<any, Record<string, any>, number>): Promise<any> {
         const body = req.body;
+        if (!body.userId) {
+            return res.status(400).send("The userId property is mandatory.");
+        }
+        if (!body.sId) {
+            return res.status(400).send("The sId property is mandatory, this is needed to later map the emited event to a browser session.");
+        }
         const user = await this.idp.getUser(body.userId as string);
-        if (body.userId && user) {
-            const templateResult = await this.createTemplate(RegistrationType.Newcommer, body.userId as string, body.sId as string | undefined);
+        if (user) {
+            const templateResult = await this.createTemplate(RegistrationType.Onboarding, body.sId as string, body.userId as string);
             if (templateResult.isError) {
                 return res.status(templateResult.error.code as unknown as number).send(templateResult.error.message);
             }
@@ -313,7 +312,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         const body = req.body;
         let password: string | undefined;
         switch (this.configuration.passwordStrategy) {
-            case "setByRequest": {
+            case "useGivenPassword": {
                 if (!body.password) {
                     return res
                         .status(400)
@@ -328,26 +327,26 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             }
         }
 
-        if (!body.userId && this.configuration.userIdStrategy === "setByRequest") {
+        if (!body.userId && this.configuration.userIdStrategy === "useGivenUserId") {
             return res.status(400).send("To create a username with the custom userIdStrategy you need to pass it");
+        }
+        if (!body.sId) {
+            return res.status(400).send("The sId property is mandatory, this is needed to later map the emited event to a browser session.");
         }
 
         const templateResponse = await this.createTemplate(
             RegistrationType.Newcommer,
-            this.configuration.userIdStrategy === "setByRequest" ? (body.userId as string) : undefined,
-            body.sId as string | undefined
+            body.sId as string,
+            this.configuration.userIdStrategy === "useGivenUserId" ? (body.userId as string) : undefined
         );
         if (templateResponse.isError) {
             return res.status(templateResponse.error.code as unknown as number).send(templateResponse.error.message);
         }
-        if (this.configuration.passwordStrategy === "setByRequest") {
-            this.passwordStore!.set(templateResponse.value.templateId, { userId: body.userId as string | undefined, pw: password! });
+        if (this.configuration.passwordStrategy === "useGivenPassword") {
+            // This is okay since the createTemplate method inserts this key into the map and it is impossible for it to be gone at this point
+            this.store.get(templateResponse.value.templateId)!.password = password;
         }
 
-        // Only add the template id to expire list if the sId is not set since if it were set the id is allready in the list
-        if (this.configuration.passwordStrategy === "setByRequest" && !body.sId) {
-            this.expireManager.addItemToExpire(templateResponse.value.templateId);
-        }
         return res.status(201).send(templateResponse.value);
     }
 
@@ -359,7 +358,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         if (!body.sId) {
             return res.status(400).send("You need to specify the session id to later associate the login reuest with that session.");
         }
-        const templateResult = await this.createTemplate(RegistrationType.Newcommer, undefined, body.sId as string, true);
+        const templateResult = await this.createTemplate(RegistrationType.Newcommer, body.sId as string, undefined, true);
 
         if (templateResult.isError) {
             return res.status(templateResult.error.code as unknown as number).send(templateResult.error.message);
@@ -383,7 +382,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         return { target: userId, tokens };
     }
 
-    private async createTemplate(type: RegistrationType, userId?: string, sId?: string, login?: boolean): Promise<Result<{ reference: string; templateId: string }>> {
+    private async createTemplate(type: RegistrationType, sId: string, userId?: string, login?: boolean): Promise<Result<{ reference: string; templateId: string }>> {
         const identity = (await this.runtime.transportServices.account.getIdentityInfo()).value;
 
         const sharableDisplayName = await this.getOrCreateConnectorDisplayName(identity.address, this.configuration.displayName);
@@ -400,25 +399,6 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         const proposedItems: RequestItemJSONDerivations[] = [];
 
         const requestItems: RequestItemJSONDerivations[] = [];
-
-        if (userId) {
-            createItems.push({
-                "@type": "CreateAttributeRequestItem",
-                mustBeAccepted: true,
-                attribute: {
-                    "@type": "RelationshipAttribute",
-                    owner: identity.address,
-                    key: "userId",
-                    value: {
-                        "@type": "ProprietaryString",
-                        title: `${this.configuration.displayName}.userId`,
-                        value: userId
-                    },
-                    isTechnical: false,
-                    confidentiality: RelationshipAttributeConfidentiality.Public
-                }
-            });
-        }
 
         let requestedData: string[] = [];
 
@@ -587,10 +567,9 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         }
 
         // Safe session id if it is present and add the key to the expire list
-        if (sId) {
-            this.sessionStore.set(template.value.id, sId);
+
+        this.store.set(template.value.id, { userId, sessionId: sId, password: undefined });
             this.expireManager.addItemToExpire(template.value.id);
-        }
 
         return Result.ok({ reference: token.value.truncatedReference, templateId: template.value.id });
     }
