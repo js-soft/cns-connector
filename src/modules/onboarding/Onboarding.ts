@@ -785,7 +785,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         }
 
         if (!requestPlausible.value.isSuccess) {
-            return Result.fail(new ApplicationError("400", requestPlausible.value.message ?? ""));
+            return Result.fail(new ApplicationError(requestPlausible.value.code!, requestPlausible.value.message ?? ""));
         }
 
         let onExistingRelationship;
