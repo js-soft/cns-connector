@@ -20,7 +20,7 @@ import { ExpireManager } from "./utils/ExpireManager";
  *  since it is to unperformant to actually traverse all users to search for a enmeshed address.
  */
 
-export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig {}
+export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig { }
 
 export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleConfig> {
     private idp: IdentityProvider;
@@ -139,7 +139,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     data: undefined,
                     sessionId: storeData!.sessionId,
                     onboardingId: templateId,
-                    errorMessage: "This enmeshed account is not connected to the "
+                    errorMessage: "This enmeshed account is not connected to the Connector"
                 })
             );
             return;
@@ -156,6 +156,10 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 }
                 case "useEnmeshedRelationshipId": {
                     storeData!.userId = relationship.id;
+                    break;
+                }
+                case "useShortestPossibleEnmeshedAddress": {
+                    storeData!.userId = await this.getShortestPossibleEnmeshedAddress(relationship.id);
                     break;
                 }
             }
@@ -412,6 +416,16 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             // if (data.content.)
             await this.handleIDPOnboardingOfExistingEnmeshedUser(data, templateId);
         }
+    }
+
+    private async getShortestPossibleEnmeshedAddress(enmeshedAddress: string, length = 4): Promise<string> {
+        const addressLength = enmeshedAddress.length;
+        const shortestAddress = enmeshedAddress.substring(addressLength - length);
+        const user = await this.idp.getUser(shortestAddress);
+        if (user) {
+            return await this.getShortestPossibleEnmeshedAddress(enmeshedAddress, length + 1);
+        }
+        return shortestAddress;
     }
 
     private async handleIDPOnboardingOfExistingEnmeshedUser(request: LocalRequestDTO, templateId: string) {
@@ -840,7 +854,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                 onNewRelationship,
                 onExistingRelationship: onExistingRelationship
             },
-            expiresAt: DateTime.now().plus({ days: 2 }).toISO()
+            expiresAt: DateTime.now().plus({ minutes: this.configuration.templateExpiresAfterXMinutes }).toISO()
         });
 
         if (template.isError) {
