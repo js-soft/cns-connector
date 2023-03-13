@@ -118,6 +118,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                             onboardingId: templateId
                         })
                     );
+                    await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                     return;
                 case RegistrationType.Onboarding:
                     this.runtime.eventBus.publish(
@@ -128,6 +129,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                             onboardingId: templateId
                         })
                     );
+                    await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                     return;
             }
         }
@@ -142,6 +144,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                     errorMessage: "This enmeshed account is not connected to the Connector"
                 })
             );
+            await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
             return;
         }
         if (!storeData!.userId) {
