@@ -20,7 +20,7 @@ import { ExpireManager } from "./utils/ExpireManager";
  *  since it is to unperformant to actually traverse all users to search for a enmeshed address.
  */
 
-export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig { }
+export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig {}
 
 export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleConfig> {
     private idp: IdentityProvider;
