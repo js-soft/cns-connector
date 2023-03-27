@@ -5,17 +5,17 @@ import AgentKeepAlive, { HttpsAgent } from "agentkeepalive";
 import AsyncRetry from "async-retry";
 import axios, { AxiosInstance } from "axios";
 import { KeycloakUserWithRoles } from "../KeycloakUser";
-import { IdentityProviderOnboardingAdapter } from "./IdentityProvider";
 import { KeycloakClientConfig } from "./IdentityProviderConfig";
+import { IdentityProviderOnboardingAdapter } from "./IdentityProviderOnboardingAdapter";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const randExp = require("randexp");
 
 export enum RegistrationType {
-    Newcommer = "Newcommer",
+    Newcommer = "Newcomer",
     Onboarding = "Onboarding"
 }
 
-export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapter {
+export class KeycloakOnboardingAdapter implements IdentityProviderOnboardingAdapter {
     private readonly axios: AxiosInstance;
     public constructor(private readonly config: KeycloakClientConfig) {
         this.axios = axios.create({
@@ -169,7 +169,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
             },
             {
                 headers: {
-                    authorization: `bearer ${adminToken}`,
+                    authorization: `Bearer ${adminToken}`,
                     "content-type": "application/json"
                 }
             }
@@ -203,7 +203,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
                 },
                 {
                     headers: {
-                        authorization: `bearer ${adminToken}`,
+                        authorization: `Bearer ${adminToken}`,
                         "Content-Type": "application/json"
                     }
                 }
@@ -242,7 +242,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
                 },
                 {
                     headers: {
-                        authorization: `bearer ${token}`,
+                        authorization: `Bearer ${token}`,
                         "Content-Type": "application/json"
                     }
                 }
@@ -264,7 +264,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
 
             await this.axios.post(`/admin/realms/${this.config.realm}/users/${user.data[0].id}/role-mappings/clients/${realmManagementClient.id}`, roles.data, {
                 headers: {
-                    authorization: `bearer ${token}`,
+                    authorization: `Bearer ${token}`,
                     "Content-Type": "application/json"
                 }
             });
@@ -317,7 +317,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
                 },
                 {
                     headers: {
-                        authorization: `bearer ${token}`,
+                        authorization: `Bearer ${token}`,
                         "Content-Type": "application/json"
                     }
                 }
@@ -404,7 +404,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
                 },
                 {
                     headers: {
-                        authorization: `bearer ${token}`,
+                        authorization: `Bearer ${token}`,
                         "Content-Type": "application/json"
                     }
                 }
@@ -431,7 +431,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
                 },
                 {
                     headers: {
-                        authorization: `bearer ${token}`,
+                        authorization: `Bearer ${token}`,
                         "Content-Type": "application/json"
                     }
                 }
@@ -475,7 +475,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
                 },
                 {
                     headers: {
-                        authorization: `bearer ${token}`,
+                        authorization: `Bearer ${token}`,
                         "Content-Type": "application/json"
                     }
                 }
@@ -501,7 +501,7 @@ export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapt
                     },
                     {
                         headers: {
-                            authorization: `bearer ${token}`,
+                            authorization: `Bearer ${token}`,
                             "Content-Type": "application/json"
                         }
                     }

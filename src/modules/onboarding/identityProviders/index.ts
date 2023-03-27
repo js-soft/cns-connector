@@ -1,3 +1,3 @@
-export * from "./IdentityProvider";
 export * from "./IdentityProviderConfig";
+export * from "./IdentityProviderOnboardingAdapter";
 export * from "./KeycloakIdentityProvider";

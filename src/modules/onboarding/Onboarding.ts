@@ -10,7 +10,7 @@ import { ConnectorRuntimeModule, ConnectorRuntimeModuleConfiguration } from "../
 import { HttpMethod } from "../../infrastructure";
 import { OnboardingCompletedEvent, RegistrationCompletedEvent } from "./events";
 import { LoginCompletedEvent } from "./events/LoginCompletedEvent";
-import { IdentityProviderOnboardingAdapter, KeycloakClientConfig, KeycloakIdentityProvider, RegistrationType } from "./identityProviders";
+import { IdentityProviderOnboardingAdapter, KeycloakClientConfig, KeycloakOnboardingAdapter, RegistrationType } from "./identityProviders";
 import { OnboardingConfig } from "./OnboardingConfig";
 import { ExpireManager } from "./utils/ExpireManager";
 
@@ -28,7 +28,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
     private expireManager: ExpireManager;
 
     public async init(): Promise<void> {
-        this.idp = new KeycloakIdentityProvider(this.configuration);
+        this.idp = new KeycloakOnboardingAdapter(this.configuration);
         this.store = new Map();
         this.expireManager = new ExpireManager({ minutes: this.configuration.templateExpiresAfterXMinutes });
 
