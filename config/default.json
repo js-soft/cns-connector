@@ -100,7 +100,7 @@
             "displayName": "AMQP Publisher",
             "location": "amqpPublisher/AMQPPublisherModule"
         },
-        "idpOnboarding": {
+        "onboarding": {
             "enabled": false,
             "displayName": "Onboarding",
             "location": "onboarding/Onboarding",

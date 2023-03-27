@@ -15,7 +15,7 @@ interface TargetDetails {
     // Even when the login is unsuccessful we should communicate what userId login was requested
     target: string;
     // The tokens are defined if sucess === true
-    tokens?: string;
+    tokens?: unknown;
 }
 
 export class LoginCompletedEvent extends DataEvent<LoginResult> {

@@ -1,10 +1,11 @@
 /* eslint-disable @typescript-eslint/naming-convention */
+import { ApplicationError, Result } from "@js-soft/ts-utils";
 import { ResponseItemGroupJSON, ResponseJSON } from "@nmshd/content";
 import AgentKeepAlive, { HttpsAgent } from "agentkeepalive";
 import AsyncRetry from "async-retry";
 import axios, { AxiosInstance } from "axios";
 import { KeycloakUserWithRoles } from "../KeycloakUser";
-import { IdentityProvider, IDPResult } from "./IdentityProvider";
+import { IdentityProviderOnboardingAdapter } from "./IdentityProvider";
 import { KeycloakClientConfig } from "./IdentityProviderConfig";
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const randExp = require("randexp");
@@ -14,7 +15,7 @@ export enum RegistrationType {
     Onboarding = "Onboarding"
 }
 
-export class KeycloakIdentityProvider implements IdentityProvider {
+export class KeycloakIdentityProvider implements IdentityProviderOnboardingAdapter {
     private readonly axios: AxiosInstance;
     public constructor(private readonly config: KeycloakClientConfig) {
         this.axios = axios.create({
@@ -52,18 +53,18 @@ export class KeycloakIdentityProvider implements IdentityProvider {
         }
     }
 
-    public async onboard(change: ResponseJSON, userId: string, enmeshedAddress: string): Promise<IDPResult> {
+    public async onboardExistingUserForRelationshipRequest(change: ResponseJSON, userId: string, enmeshedAddress: string): Promise<Result<undefined>> {
         const userData = getUserData(change, userId, enmeshedAddress);
 
         const status = await this.updateUser(userData);
 
         if (status !== 204) {
-            return IDPResult.Error;
+            return Result.fail(new ApplicationError("error.onboarding.idpError", "There was an error updating the idp user"));
         }
-        return IDPResult.Success;
+        return Result.ok(undefined);
     }
 
-    public async register(change: ResponseJSON, userId: string, password: string, enmeshedAddress: string): Promise<IDPResult> {
+    public async registerNewUserForRelationshipRequest(change: ResponseJSON, userId: string, password: string, enmeshedAddress: string): Promise<Result<void>> {
         const userData = getUserData(change, userId, enmeshedAddress);
 
         const status = await this.createUser({
@@ -71,12 +72,12 @@ export class KeycloakIdentityProvider implements IdentityProvider {
             ...{ password: password }
         });
         if (status !== 201) {
-            return IDPResult.Error;
+            return Result.fail(new ApplicationError("error.onboarding.idpError", "There was an error creating the idp user"));
         }
-        return IDPResult.Success;
+        return Result.ok(undefined);
     }
 
-    public async login(userId: string): Promise<string | undefined> {
+    public async authenticateUserAndReturnSessionCredentials(userId: string): Promise<string | undefined> {
         const user = await this.getUser(userId);
 
         if (!user) {

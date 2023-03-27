@@ -25,7 +25,7 @@ services:
     stdin_open: true
     tty: true
     
-  keycloaky:
+  keycloak:
     container_name: keycloaky
     image: quay.io/keycloak/keycloak:latest
     environment:
@@ -39,7 +39,7 @@ services:
     depends_on:
       - postgresy
   
-  postgresy:
+  postgres:
     container_name: postgresy
     image: postgres
     volumes:

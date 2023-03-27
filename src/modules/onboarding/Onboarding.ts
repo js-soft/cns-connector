@@ -10,7 +10,7 @@ import { ConnectorRuntimeModule, ConnectorRuntimeModuleConfiguration } from "../
 import { HttpMethod } from "../../infrastructure";
 import { OnboardingCompletedEvent, RegistrationCompletedEvent } from "./events";
 import { LoginCompletedEvent } from "./events/LoginCompletedEvent";
-import { IdentityProvider, IDPResult, KeycloakClientConfig, KeycloakIdentityProvider, RegistrationType } from "./identityProviders";
+import { IdentityProviderOnboardingAdapter, KeycloakClientConfig, KeycloakIdentityProvider, RegistrationType } from "./identityProviders";
 import { OnboardingConfig } from "./OnboardingConfig";
 import { ExpireManager } from "./utils/ExpireManager";
 
@@ -23,7 +23,7 @@ import { ExpireManager } from "./utils/ExpireManager";
 export interface OnboardingModuleConfig extends ConnectorRuntimeModuleConfiguration, KeycloakClientConfig, OnboardingConfig {}
 
 export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleConfig> {
-    private idp: IdentityProvider;
+    private idp: IdentityProviderOnboardingAdapter;
     private store: Map<string, { userId?: string; password?: string; sessionId: string }>;
     private expireManager: ExpireManager;
 
@@ -187,76 +187,10 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                         }
                     }
                 }
-                const registrationResult = await this.idp.register(change, storeData!.userId, storeData!.password, relationship.peer);
-                switch (registrationResult) {
-                    case IDPResult.Success: {
-                        const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
-                        if (r.isError) {
-                            await this.runtime.transportServices.relationships.rejectRelationshipChange({
-                                relationshipId: relationship.id,
-                                changeId,
-                                content: {}
-                            });
-                            this.runtime.eventBus.publish(
-                                new RegistrationCompletedEvent({
-                                    success: false,
-                                    data: undefined,
-                                    errorMessage: "Connector error trying to accept relationship change.",
-                                    onboardingId: templateId
-                                })
-                            );
-                        } else {
-                            this.runtime.eventBus.publish(
-                                new RegistrationCompletedEvent({
-                                    success: true,
-                                    data: {
-                                        userId: storeData!.userId,
-                                        sessionId: storeData!.sessionId,
-                                        password: storeData!.password
-                                    },
-                                    onboardingId: templateId
-                                })
-                            );
-                            const outgoingRequestResponse = await this.runtime.consumptionServices.outgoingRequests.create({
-                                content: {
-                                    items: [
-                                        {
-                                            "@type": "CreateAttributeRequestItem",
-                                            mustBeAccepted: true,
-                                            attribute: {
-                                                "@type": "RelationshipAttribute",
-                                                owner: identity.address,
-                                                key: "userId",
-                                                value: {
-                                                    "@type": "ProprietaryString",
-                                                    title: `${this.configuration.displayName}.userId`,
-                                                    value: storeData!.userId
-                                                },
-                                                isTechnical: false,
-                                                confidentiality: RelationshipAttributeConfidentiality.Public
-                                            }
-                                        }
-                                    ]
-                                },
-                                peer: relationship.peer
-                            });
-                            if (outgoingRequestResponse.isError) {
-                                this.logger.error(outgoingRequestResponse.error);
-                                return;
-                            }
-                            const content = outgoingRequestResponse.value.content;
-
-                            const messageResponse = await this.runtime.transportServices.messages.sendMessage({
-                                recipients: [relationship.peer],
-                                content
-                            });
-                            if (messageResponse.isError) {
-                                this.logger.error(messageResponse.error);
-                            }
-                        }
-                        break;
-                    }
-                    case IDPResult.Error: {
+                const registrationResult = await this.idp.registerNewUserForRelationshipRequest(change, storeData!.userId, storeData!.password, relationship.peer);
+                if (registrationResult.isSuccess) {
+                    const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
+                    if (r.isError) {
                         await this.runtime.transportServices.relationships.rejectRelationshipChange({
                             relationshipId: relationship.id,
                             changeId,
@@ -266,93 +200,152 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
                             new RegistrationCompletedEvent({
                                 success: false,
                                 data: undefined,
-                                errorMessage: "IDP Error trying to create a new user.",
+                                errorMessage: "Connector error trying to accept relationship change.",
                                 onboardingId: templateId
                             })
                         );
-                        break;
-                    }
-                }
-                break;
-            case RegistrationType.Onboarding:
-                const onboardingResult = await this.idp.onboard(change, storeData!.userId, relationship.peer);
-                switch (onboardingResult) {
-                    case IDPResult.Success: {
-                        const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
-                        if (r.isError) {
-                            await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
-                            this.runtime.eventBus.publish(
-                                new OnboardingCompletedEvent({
-                                    success: false,
-                                    data: undefined,
-                                    errorMessage: "Connector error trying to accept relationship change.",
-                                    onboardingId: templateId
-                                })
-                            );
-                        } else {
-                            this.runtime.eventBus.publish(
-                                new OnboardingCompletedEvent({
-                                    success: true,
-                                    data: {
-                                        userId: storeData!.userId,
-                                        sessionId: storeData!.sessionId
-                                    },
-                                    onboardingId: templateId
-                                })
-                            );
-                            const outgoingRequestResponse = await this.runtime.consumptionServices.outgoingRequests.create({
-                                content: {
-                                    items: [
-                                        {
-                                            "@type": "CreateAttributeRequestItem",
-                                            mustBeAccepted: true,
-                                            attribute: {
-                                                "@type": "RelationshipAttribute",
-                                                owner: identity.address,
-                                                key: "userId",
-                                                value: {
-                                                    "@type": "ProprietaryString",
-                                                    title: `${this.configuration.displayName}.userId`,
-                                                    value: storeData!.userId
-                                                },
-                                                isTechnical: false,
-                                                confidentiality: RelationshipAttributeConfidentiality.Public
-                                            }
-                                        }
-                                    ]
+                    } else {
+                        this.runtime.eventBus.publish(
+                            new RegistrationCompletedEvent({
+                                success: true,
+                                data: {
+                                    userId: storeData!.userId,
+                                    sessionId: storeData!.sessionId,
+                                    password: storeData!.password
                                 },
-                                peer: relationship.peer
-                            });
-                            if (outgoingRequestResponse.isError) {
-                                this.logger.error(outgoingRequestResponse.error);
-                                return;
-                            }
-                            const requestContent = outgoingRequestResponse.value.content;
-
-                            const messageResponse = await this.runtime.transportServices.messages.sendMessage({
-                                recipients: [relationship.peer],
-                                content: requestContent
-                            });
-                            if (messageResponse.isError) {
-                                this.logger.error(messageResponse.error);
-                            }
+                                onboardingId: templateId
+                            })
+                        );
+                        const outgoingRequestResponse = await this.runtime.consumptionServices.outgoingRequests.create({
+                            content: {
+                                items: [
+                                    {
+                                        "@type": "CreateAttributeRequestItem",
+                                        mustBeAccepted: true,
+                                        attribute: {
+                                            "@type": "RelationshipAttribute",
+                                            owner: identity.address,
+                                            key: "userId",
+                                            value: {
+                                                "@type": "ProprietaryString",
+                                                title: `${this.configuration.displayName}.userId`,
+                                                value: storeData!.userId
+                                            },
+                                            isTechnical: false,
+                                            confidentiality: RelationshipAttributeConfidentiality.Public
+                                        }
+                                    }
+                                ]
+                            },
+                            peer: relationship.peer
+                        });
+                        if (outgoingRequestResponse.isError) {
+                            this.logger.error(outgoingRequestResponse.error);
+                            return;
                         }
-                        break;
+                        const content = outgoingRequestResponse.value.content;
+
+                        const messageResponse = await this.runtime.transportServices.messages.sendMessage({
+                            recipients: [relationship.peer],
+                            content
+                        });
+                        if (messageResponse.isError) {
+                            this.logger.error(messageResponse.error);
+                        }
                     }
-                    case IDPResult.Error: {
+                    break;
+                } else {
+                    await this.runtime.transportServices.relationships.rejectRelationshipChange({
+                        relationshipId: relationship.id,
+                        changeId,
+                        content: {}
+                    });
+                    this.runtime.eventBus.publish(
+                        new RegistrationCompletedEvent({
+                            success: false,
+                            data: undefined,
+                            errorMessage: "IDP Error trying to create a new user.",
+                            onboardingId: templateId
+                        })
+                    );
+                    break;
+                }
+
+            case RegistrationType.Onboarding:
+                const onboardingResult = await this.idp.onboardExistingUserForRelationshipRequest(change, storeData!.userId, relationship.peer);
+                if (onboardingResult.isSuccess) {
+                    const r = await this.runtime.transportServices.relationships.acceptRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
+                    if (r.isError) {
                         await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
                         this.runtime.eventBus.publish(
                             new OnboardingCompletedEvent({
                                 success: false,
                                 data: undefined,
-                                errorMessage: "IDP Error trying to onboard user.",
+                                errorMessage: "Connector error trying to accept relationship change.",
                                 onboardingId: templateId
                             })
                         );
-                        break;
+                    } else {
+                        this.runtime.eventBus.publish(
+                            new OnboardingCompletedEvent({
+                                success: true,
+                                data: {
+                                    userId: storeData!.userId,
+                                    sessionId: storeData!.sessionId
+                                },
+                                onboardingId: templateId
+                            })
+                        );
+                        const outgoingRequestResponse = await this.runtime.consumptionServices.outgoingRequests.create({
+                            content: {
+                                items: [
+                                    {
+                                        "@type": "CreateAttributeRequestItem",
+                                        mustBeAccepted: true,
+                                        attribute: {
+                                            "@type": "RelationshipAttribute",
+                                            owner: identity.address,
+                                            key: "userId",
+                                            value: {
+                                                "@type": "ProprietaryString",
+                                                title: `${this.configuration.displayName}.userId`,
+                                                value: storeData!.userId
+                                            },
+                                            isTechnical: false,
+                                            confidentiality: RelationshipAttributeConfidentiality.Public
+                                        }
+                                    }
+                                ]
+                            },
+                            peer: relationship.peer
+                        });
+                        if (outgoingRequestResponse.isError) {
+                            this.logger.error(outgoingRequestResponse.error);
+                            return;
+                        }
+                        const requestContent = outgoingRequestResponse.value.content;
+
+                        const messageResponse = await this.runtime.transportServices.messages.sendMessage({
+                            recipients: [relationship.peer],
+                            content: requestContent
+                        });
+                        if (messageResponse.isError) {
+                            this.logger.error(messageResponse.error);
+                        }
                     }
+                    break;
+                } else {
+                    await this.runtime.transportServices.relationships.rejectRelationshipChange({ relationshipId: relationship.id, changeId, content: {} });
+                    this.runtime.eventBus.publish(
+                        new OnboardingCompletedEvent({
+                            success: false,
+                            data: undefined,
+                            errorMessage: "IDP Error trying to onboard user.",
+                            onboardingId: templateId
+                        })
+                    );
+                    break;
                 }
-                break;
         }
     }
 
@@ -485,9 +478,9 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             );
             return;
         }
-        const onboardingResponse = await this.idp.onboard(request.response!.content, storeData.userId, request.peer);
+        const onboardingResponse = await this.idp.onboardExistingUserForRelationshipRequest(request.response!.content, storeData.userId, request.peer);
 
-        if (onboardingResponse === IDPResult.Error) {
+        if (onboardingResponse.isError) {
             this.runtime.eventBus.publish(
                 new OnboardingCompletedEvent({
                     onboardingId: templateId,
@@ -646,7 +639,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
         return res.status(201).send(templateResult.value);
     }
 
-    private async handleEnmeshedLogin(request: LocalRequestDTO): Promise<Result<{ target: string; tokens?: string }>> {
+    private async handleEnmeshedLogin(request: LocalRequestDTO): Promise<Result<{ target: string; tokens?: unknown }>> {
         const peer = request.peer;
         const relationship = await this.runtime.consumptionServices.attributes.getAttributes({
             query: {
@@ -666,7 +659,7 @@ export default class Onboarding extends ConnectorRuntimeModule<OnboardingModuleC
             );
         }
         const userId = (relationship.value[0].content.value as ProprietaryStringJSON).value;
-        const tokens = await this.idp.login!(userId);
+        const tokens = await this.idp.authenticateUserAndReturnSessionCredentials!(userId);
         return Result.ok({ target: userId, tokens });
     }
 

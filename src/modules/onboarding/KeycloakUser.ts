@@ -7,8 +7,8 @@ export interface KeycloakUser extends Record<string, any> {
     emailVerified: boolean;
     email: string;
     attributes?: UserAttributes;
-    disableableCredentialTypes: unknown[];
-    requiredActions: unknown[];
+    disableableCredentialTypes?: string[];
+    requiredActions?: string[];
     notBefore: number;
     access: UserAccess;
 }
