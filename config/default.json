@@ -99,6 +99,13 @@
             "enabled": false,
             "displayName": "AMQP Publisher",
             "location": "amqpPublisher/AMQPPublisherModule"
+        },
+        "onboarding": {
+            "enabled": false,
+            "displayName": "Onboarding",
+            "location": "onboarding/Onboarding",
+
+            "requiredInfrastructure": ["httpServer"]
         }
     }
 }
